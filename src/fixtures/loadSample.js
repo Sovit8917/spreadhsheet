@@ -15,11 +15,15 @@ function loadTsv(engine, text) {
     const rows = parseTsv(text)
     const cols = Math.max(...rows.map(r => r.length))
     engine.ensureCapacity(rows.length + 20, cols + 5)
+    // One batch: one recalculation and ONE undo step for the whole load
+    // (setCell per cell would push ~330 undo entries and overflow the history).
+    const changes = []
     for (let r = 0; r < rows.length; r++) {
         for (let c = 0; c < rows[r].length; c++) {
-            engine.setCell(r, c, rows[r][c])
+            changes.push({ r, c, raw: rows[r][c] })
         }
     }
+    engine.setCells(changes)
     return { rows: rows.length, cols }
 }
 

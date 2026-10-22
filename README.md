@@ -30,6 +30,7 @@ Open `http://localhost:5173`. The toolbar has two sample loaders: **⬇ Sample 3
 | `npm run preview` | Serve the production build locally |
 | `npm run lint` | ESLint |
 | `npm test` | Run the Vitest suite once (`npm run test:watch` to keep it running) |
+| `npm run bench` | Fill benchmark (5,000 cells, budget 200 ms) |
 
 For the AI tasks, copy `.env.example` to `.env.local` and fill in the `VITE_AI_*` values for whichever LLM API you choose. The default provider is an offline mock, so the app runs without any key. A backend is optional; if you add one, it lives in `server/` and starts with `npm run server`.
 
@@ -39,7 +40,9 @@ For the AI tasks, copy `.env.example` to `.env.local` and fill in the `VITE_AI_*
 spreadhsheet/
 ├── src/
 │   ├── engine/
-│   │   ├── core.js            # Engine: formulas, dependency graph, undo/redo, row/col ops (no React here)
+│   │   ├── core.js            # Engine: formulas, dependency graph, undo/redo, row/col ops, styles, fill (no React here)
+│   │   ├── refs.js            # Pure reference utilities ($ refs, shift on fill / insert / delete)
+│   │   ├── fill.js            # Pure fill-series rules (numbers, text+number, dates, names)
 │   │   └── core.test.js       # Starter tests — extend these
 │   ├── ai/
 │   │   ├── contract.js        # The JSON actions a model may return, with schemas

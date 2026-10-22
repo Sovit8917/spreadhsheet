@@ -328,14 +328,73 @@ body {
   transition: background-color 0.1s;
 }
 
-.cell:hover {
-  background: #f8f9fa;
+/* Selection outline: each edge class sets one custom property, combined in box-shadow */
+.cell {
+  --st: 0 0 0 0 transparent;
+  --sb: 0 0 0 0 transparent;
+  --sl: 0 0 0 0 transparent;
+  --sr: 0 0 0 0 transparent;
+  box-shadow: var(--st), var(--sb), var(--sl), var(--sr);
+  user-select: none;
 }
 
-.cell.selected {
-  border: 2px solid #1a73e8;
-  z-index: 1;
-  box-shadow: 0 0 0 1px rgba(26, 115, 232, 0.2);
+.cell.in-range {
+  background-image: linear-gradient(rgba(26, 115, 232, 0.14), rgba(26, 115, 232, 0.14));
+}
+
+.cell.sel-top { --st: inset 0 2px 0 0 #1a73e8; }
+.cell.sel-bottom { --sb: inset 0 -2px 0 0 #1a73e8; }
+.cell.sel-left { --sl: inset 2px 0 0 0 #1a73e8; }
+.cell.sel-right { --sr: inset -2px 0 0 0 #1a73e8; }
+
+/* The active cell is not tinted, so it reads as the one that will be edited */
+.cell.active {
+  background-image: none;
+}
+
+/* Fill preview while dragging the handle */
+.cell.fill-preview {
+  background-image: linear-gradient(rgba(95, 99, 104, 0.12), rgba(95, 99, 104, 0.12));
+}
+.cell.fp-top { --st: inset 0 2px 0 0 #5f6368; }
+.cell.fp-bottom { --sb: inset 0 -2px 0 0 #5f6368; }
+.cell.fp-left { --sl: inset 2px 0 0 0 #5f6368; }
+.cell.fp-right { --sr: inset -2px 0 0 0 #5f6368; }
+
+/* Fill handle: small square at the bottom-right of the selection */
+.cell.has-handle {
+  z-index: 3;
+}
+
+.fill-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: #1a73e8;
+  border: 1px solid #ffffff;
+  cursor: crosshair;
+  z-index: 4;
+}
+
+.col-header.header-selected,
+.row-header.header-selected {
+  background: #d3e3fd;
+  color: #1a73e8;
+}
+
+.col-header-blank {
+  cursor: pointer;
+}
+
+.col-header,
+.row-header {
+  cursor: pointer;
+}
+
+.grid-scroll:focus {
+  outline: none;
 }
 
 .cell-display {
