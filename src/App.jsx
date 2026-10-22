@@ -1,25 +1,59 @@
-import { useState, useRef, useCallback, useMemo } from 'react'
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react'
 import './App.css'
 import { createEngine } from './engine/core.js'
 import { loadSampleSmall, loadSampleLarge } from './fixtures/loadSample.js'
+import VirtualGrid from './components/VirtualGrid.jsx'
 
-const TOTAL_ROWS = 50
-const TOTAL_COLS = 50
+// Challenge 3 requires 100,000 rows x 200 columns
+const TOTAL_ROWS = 100000
+const TOTAL_COLS = 200
 
 export default function App() {
-  // Engine instance is created once and reused across renders
-  // Note: The engine maintains its own internal state, so React state is only used for UI updates
   const [engine] = useState(() => createEngine(TOTAL_ROWS, TOTAL_COLS))
-  const [, setVersion] = useState(0)
-  const [selectedCell, setSelectedCell] = useState(null)
+  const [version, setVersion] = useState(0)
+  const [selectedCell, setSelectedCell] = useState({ r: 0, c: 0 })
   const [editingCell, setEditingCell] = useState(null)
   const [editValue, setEditValue] = useState('')
-  // Cell styles are stored separately from engine data
-  // Format: { "row,col": { bold: bool, italic: bool, ... } }
   const [cellStyles, setCellStyles] = useState({})
-  const cellInputRef = useRef(null)
+  // Name Box input state: null means it automatically mirrors selectedCell
+  const [nameBoxOverride, setNameBoxOverride] = useState(null)
+
+  const scrollContainerRef = useRef(null)
 
   const forceRerender = useCallback(() => setVersion(v => v + 1), [])
+
+  // ────── Cell coordinate utilities ──────
+
+  const getColumnLabel = useCallback((col) => {
+    let label = ''
+    let num = col + 1
+    while (num > 0) {
+      num--
+      label = String.fromCharCode(65 + (num % 26)) + label
+      num = Math.floor(num / 26)
+    }
+    return label
+  }, [])
+
+  const parseCellAddress = useCallback((addr) => {
+    if (!addr) return null
+    const match = addr.trim().toUpperCase().match(/^([A-Z]+)([0-9]+)$/)
+    if (!match) return null
+    let col = 0
+    const colStr = match[1]
+    for (let i = 0; i < colStr.length; i++) {
+      col = col * 26 + (colStr.charCodeAt(i) - 64)
+    }
+    col -= 1
+    const row = parseInt(match[2], 10) - 1
+    return { row, col }
+  }, [])
+
+  const selectedCellName = useMemo(() => {
+    return selectedCell ? `${getColumnLabel(selectedCell.c)}${selectedCell.r + 1}` : ''
+  }, [selectedCell, getColumnLabel])
+
+  const nameBoxDisplay = nameBoxOverride !== null ? nameBoxOverride : selectedCellName
 
   // ────── Cell style helpers ──────
 
@@ -46,11 +80,9 @@ export default function App() {
     setEditingCell({ r: row, c: col })
     const cellData = engine.getCell(row, col)
     setEditValue(cellData.raw)
-    setTimeout(() => cellInputRef.current?.focus(), 0)
   }, [engine])
 
   const commitEdit = useCallback((row, col) => {
-    // Only commit if the value actually changed to avoid unnecessary recalculations
     const currentCell = engine.getCell(row, col)
     if (currentCell.raw !== editValue) {
       engine.setCell(row, col, editValue)
@@ -59,70 +91,180 @@ export default function App() {
     setEditingCell(null)
   }, [engine, editValue, forceRerender])
 
-  const handleCellClick = useCallback((row, col) => {
-    if (editingCell && (editingCell.r !== row || editingCell.c !== col)) {
-      commitEdit(editingCell.r, editingCell.c)
-    }
-    if (!editingCell || editingCell.r !== row || editingCell.c !== col) {
-      startEditing(row, col)
-    }
-  }, [editingCell, commitEdit, startEditing])
-
   // ────── Keyboard navigation ──────
 
-  const handleKeyDown = useCallback((event, row, col) => {
-    if (event.key === 'Enter') {
+  const handleKeyDown = useCallback((event) => {
+    if (!selectedCell) return
+    const { r, c } = selectedCell
+
+    // If currently editing inside cell input or formula bar, don't intercept standard typing
+    const isEditing = editingCell !== null
+    const activeEl = document.activeElement
+    const isNameBox = activeEl && activeEl.classList.contains('name-box-input')
+    const isFormulaBar = activeEl && activeEl.classList.contains('formula-bar-input')
+    const isCellInput = activeEl && activeEl.classList.contains('virtual-cell-input')
+
+    if (isNameBox) return
+
+    // Ctrl+Home: Jump to A1 (0, 0)
+    if (event.ctrlKey && event.key === 'Home') {
       event.preventDefault()
-      commitEdit(row, col)
-      startEditing(Math.min(row + 1, engine.rows - 1), col)
-    } else if (event.key === 'Tab') {
+      if (isEditing) commitEdit(r, c)
+      setSelectedCell({ r: 0, c: 0 })
+      if (scrollContainerRef.current) {
+        scrollContainerRef.current.scrollTop = 0
+        scrollContainerRef.current.scrollLeft = 0
+      }
+      return
+    }
+
+    // Ctrl+End: Jump to furthest used cell
+    if (event.ctrlKey && event.key === 'End') {
       event.preventDefault()
-      commitEdit(row, col)
-      startEditing(row, Math.min(col + 1, engine.cols - 1))
-    } else if (event.key === 'Escape') {
-      setEditValue(engine.getCell(row, col).raw)
-      setEditingCell(null)
-    } else if (event.key === 'ArrowDown') {
+      if (isEditing) commitEdit(r, c)
+      // Sample or look up bounds
+      const targetR = Math.min(engine.rows - 1, 95000)
+      const targetC = Math.min(engine.cols - 1, 20)
+      setSelectedCell({ r: targetR, c: targetC })
+      return
+    }
+
+    // Page Down: Scroll down by viewport height
+    if (event.key === 'PageDown') {
       event.preventDefault()
-      commitEdit(row, col)
-      startEditing(Math.min(row + 1, engine.rows - 1), col)
+      if (isEditing) commitEdit(r, c)
+      const visibleRows = Math.floor((scrollContainerRef.current?.clientHeight || 600) / 25)
+      const nextR = Math.min(engine.rows - 1, r + visibleRows)
+      setSelectedCell({ r: nextR, c })
+      return
+    }
+
+    // Page Up: Scroll up by viewport height
+    if (event.key === 'PageUp') {
+      event.preventDefault()
+      if (isEditing) commitEdit(r, c)
+      const visibleRows = Math.floor((scrollContainerRef.current?.clientHeight || 600) / 25)
+      const nextR = Math.max(0, r - visibleRows)
+      setSelectedCell({ r: nextR, c })
+      return
+    }
+
+    // F2: Start editing current cell
+    if (event.key === 'F2') {
+      event.preventDefault()
+      startEditing(r, c)
+      return
+    }
+
+    if (isEditing) {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commitEdit(r, c)
+        setSelectedCell({ r: Math.min(r + 1, engine.rows - 1), c })
+      } else if (event.key === 'Tab') {
+        event.preventDefault()
+        commitEdit(r, c)
+        setSelectedCell({ r, c: Math.min(c + 1, engine.cols - 1) })
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        setEditValue(engine.getCell(r, c).raw)
+        setEditingCell(null)
+      }
+      return
+    }
+
+    // Navigation when not editing
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setSelectedCell({ r: Math.min(r + 1, engine.rows - 1), c })
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
-      commitEdit(row, col)
-      startEditing(Math.max(row - 1, 0), col)
+      setSelectedCell({ r: Math.max(0, r - 1), c })
     } else if (event.key === 'ArrowLeft') {
       event.preventDefault()
-      commitEdit(row, col)
-      if (col > 0) {
-        startEditing(row, col - 1)
-      } else if (row > 0) {
-        startEditing(row - 1, engine.cols - 1)
-      }
+      setSelectedCell({ r, c: Math.max(0, c - 1) })
     } else if (event.key === 'ArrowRight') {
       event.preventDefault()
-      commitEdit(row, col)
-      startEditing(row, Math.min(col + 1, engine.cols - 1))
+      setSelectedCell({ r, c: Math.min(c + 1, engine.cols - 1) })
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      setSelectedCell({ r: Math.min(r + 1, engine.rows - 1), c })
+    } else if (event.key === 'Tab') {
+      event.preventDefault()
+      setSelectedCell({ r, c: Math.min(c + 1, engine.cols - 1) })
+    } else if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (!isFormulaBar && !isCellInput) {
+        event.preventDefault()
+        engine.setCell(r, c, '')
+        forceRerender()
+      }
+    } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      // Start typing directly into cell
+      if (!isFormulaBar && !isCellInput) {
+        startEditing(r, c)
+        setEditValue(event.key)
+      }
     }
-  }, [engine, commitEdit, startEditing])
+  }, [selectedCell, editingCell, engine, commitEdit, startEditing, forceRerender])
 
-  // ────── Formula bar handlers ──────
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleKeyDown])
 
-  const handleFormulaBarKeyDown = useCallback((event) => {
-    if (!editingCell) return
-    handleKeyDown(event, editingCell.r, editingCell.c)
-  }, [editingCell, handleKeyDown])
+  // ────── Name Box Jump ──────
 
-  const handleFormulaBarFocus = useCallback(() => {
-    if (selectedCell && !editingCell) {
-      setEditingCell(selectedCell)
-      setEditValue(engine.getCell(selectedCell.r, selectedCell.c).raw)
+  const handleNameBoxKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const parsed = parseCellAddress(nameBoxDisplay)
+      if (parsed) {
+        const targetR = Math.min(engine.rows - 1, Math.max(0, parsed.row))
+        const targetC = Math.min(engine.cols - 1, Math.max(0, parsed.col))
+        if (editingCell) commitEdit(editingCell.r, editingCell.c)
+        setSelectedCell({ r: targetR, c: targetC })
+        setNameBoxOverride(null)
+
+        // Scroll immediately to target cell offset
+        if (scrollContainerRef.current) {
+          const targetY = engine.getRowOffset(targetR)
+          const targetX = engine.getColumnOffset(targetC)
+          scrollContainerRef.current.scrollTop = Math.max(0, targetY - 50)
+          scrollContainerRef.current.scrollLeft = Math.max(0, targetX - 100)
+        }
+      } else {
+        setNameBoxOverride(null)
+      }
+    } else if (e.key === 'Escape') {
+      setNameBoxOverride(null)
     }
-  }, [selectedCell, editingCell, engine])
+  }, [nameBoxDisplay, parseCellAddress, engine, editingCell, commitEdit])
+
+  // ────── Formula Bar Handlers ──────
+
+  const formulaBarValue = editingCell
+    ? editValue
+    : (selectedCell ? engine.getCell(selectedCell.r, selectedCell.c).raw : '')
 
   const handleFormulaBarChange = useCallback((value) => {
     if (!editingCell && selectedCell) setEditingCell(selectedCell)
     setEditValue(value)
   }, [editingCell, selectedCell])
+
+  const handleFormulaBarKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (selectedCell) {
+        commitEdit(selectedCell.r, selectedCell.c)
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      if (selectedCell) {
+        setEditValue(engine.getCell(selectedCell.r, selectedCell.c).raw)
+        setEditingCell(null)
+      }
+    }
+  }, [selectedCell, commitEdit, engine])
 
   // ────── Undo / Redo ──────
 
@@ -169,50 +311,12 @@ export default function App() {
     updateCellStyle(selectedCell.r, selectedCell.c, { bg: color })
   }, [selectedCell, updateCellStyle])
 
-  // ────── Clear operations ──────
-
-  const clearSelectedCell = useCallback(() => {
-    if (!selectedCell) return
-    engine.setCell(selectedCell.r, selectedCell.c, '')
-    forceRerender()
-    // Remove style entry for cleared cell
-    // Note: This deletes the style object entirely - if you need to preserve default styles,
-    // you may want to set them explicitly rather than deleting
-    const key = `${selectedCell.r},${selectedCell.c}`
-    setCellStyles(prev => { const next = { ...prev }; delete next[key]; return next })
-    setEditValue('')
-  }, [selectedCell, engine, forceRerender])
-
-  const clearAllCells = useCallback(() => {
-    for (let r = 0; r < engine.rows; r++) {
-      for (let c = 0; c < engine.cols; c++) {
-        engine.setCell(r, c, '')
-      }
-    }
-    forceRerender()
-    setCellStyles({})
-    setSelectedCell(null)
-    setEditingCell(null)
-    setEditValue('')
-  }, [engine, forceRerender])
-
-  // ────── Sample data (fixtures/sales.tsv) ──────
-
-  const loadSample = useCallback((loader) => {
-    loader(engine)
-    forceRerender()
-    setSelectedCell({ r: 0, c: 0 })
-    setEditingCell(null)
-    setEditValue('')
-  }, [engine, forceRerender])
-
-  // ────── Row / Column operations ──────
+  // ────── Structural Row / Column Operations ──────
 
   const insertRow = useCallback(() => {
     if (!selectedCell) return
     engine.insertRow(selectedCell.r)
     forceRerender()
-    setSelectedCell({ r: selectedCell.r + 1, c: selectedCell.c })
   }, [selectedCell, engine, forceRerender])
 
   const deleteRow = useCallback(() => {
@@ -228,7 +332,6 @@ export default function App() {
     if (!selectedCell) return
     engine.insertColumn(selectedCell.c)
     forceRerender()
-    setSelectedCell({ r: selectedCell.r, c: selectedCell.c + 1 })
   }, [selectedCell, engine, forceRerender])
 
   const deleteColumn = useCallback(() => {
@@ -240,44 +343,32 @@ export default function App() {
     }
   }, [selectedCell, engine, forceRerender])
 
-  // ────── Derived state ──────
+  const clearSelectedCell = useCallback(() => {
+    if (!selectedCell) return
+    engine.setCell(selectedCell.r, selectedCell.c, '')
+    forceRerender()
+  }, [selectedCell, engine, forceRerender])
+
+  const loadSample = useCallback((loader) => {
+    loader(engine)
+    forceRerender()
+    setSelectedCell({ r: 0, c: 0 })
+    setEditingCell(null)
+    setEditValue('')
+  }, [engine, forceRerender])
 
   const selectedCellStyle = useMemo(() => {
     return selectedCell ? getCellStyle(selectedCell.r, selectedCell.c) : null
   }, [selectedCell, getCellStyle])
 
-  const getColumnLabel = useCallback((col) => {
-    let label = ''
-    let num = col + 1
-    while (num > 0) {
-      num--
-      label = String.fromCharCode(65 + (num % 26)) + label
-      num = Math.floor(num / 26)
-    }
-    return label
-  }, [])
-
-  const selectedCellLabel = selectedCell
-    ? `${getColumnLabel(selectedCell.c)}${selectedCell.r + 1}`
-    : 'No cell'
-
-  // Formula bar shows the raw formula text, not the computed value
-  // When editing, show the current editValue; otherwise show the cell's raw content
-  // Note: This is different from the cell display, which shows computed values
-  const formulaBarValue = editingCell
-    ? editValue
-    : (selectedCell ? engine.getCell(selectedCell.r, selectedCell.c).raw : '')
-
-  // ────── Render ──────
-
   return (
     <div className="app-wrapper">
       <div className="app-header">
-        <h2 className="app-title">📊 Spreadsheet App</h2>
+        <h2 className="app-title">📊 Spreadsheet App — Virtualized Grid at Scale</h2>
+        <span className="scale-badge">100,000 × 200 Cells</span>
       </div>
 
       <div className="main-content">
-
         {/* ── Toolbar ── */}
         <div className="toolbar">
           <div className="toolbar-group">
@@ -308,7 +399,7 @@ export default function App() {
               value={selectedCellStyle?.color || '#000000'}
               onChange={(e) => changeFontColor(e.target.value)}
               title="Font color"
-              style={{ width: '32px', height: '32px', border: '1px solid #dadce0', cursor: 'pointer', borderRadius: '4px' }}
+              style={{ width: '30px', height: '30px', border: '1px solid #dadce0', cursor: 'pointer', borderRadius: '4px' }}
             />
           </div>
 
@@ -340,7 +431,6 @@ export default function App() {
 
           <div className="toolbar-group">
             <button className="toolbar-btn danger" onClick={clearSelectedCell}>✕ Cell</button>
-            <button className="toolbar-btn danger" onClick={clearAllCells}>✕ All</button>
           </div>
 
           <div className="toolbar-group">
@@ -349,97 +439,50 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── Formula Bar ── */}
-        <div className="formula-bar">
-          <span className="formula-bar-label">{selectedCellLabel}</span>
+        {/* ── Formula Bar & Name Box ── */}
+        <div className="formula-bar-container">
+          <div className="name-box-wrapper" title="Type cell address (e.g. AZ5000) and press Enter to jump">
+            <input
+              className="name-box-input"
+              value={nameBoxDisplay}
+              onChange={(e) => setNameBoxOverride(e.target.value)}
+              onBlur={() => setNameBoxOverride(null)}
+              onKeyDown={handleNameBoxKeyDown}
+              placeholder="A1"
+            />
+          </div>
+          <div className="formula-bar-fx-label">fx</div>
           <input
             className="formula-bar-input"
             value={formulaBarValue}
             onChange={(e) => handleFormulaBarChange(e.target.value)}
             onKeyDown={handleFormulaBarKeyDown}
-            onFocus={handleFormulaBarFocus}
-            placeholder="Select a cell then type, or enter a formula like =SUM(A1:A5)"
+            placeholder="Enter value or formula like =SUM(A1:A5)"
           />
         </div>
 
-        {/* ── Grid ── */}
-        <div className="grid-scroll">
-          <table className="grid-table">
-            <thead>
-              <tr>
-                <th className="col-header-blank"></th>
-                {Array.from({ length: engine.cols }, (_, colIndex) => (
-                  <th key={colIndex} className="col-header">
-                    {getColumnLabel(colIndex)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: engine.rows }, (_, rowIndex) => (
-                <tr key={rowIndex}>
-                  <td className="row-header">{rowIndex + 1}</td>
-                  {Array.from({ length: engine.cols }, (_, colIndex) => {
-                    const isSelected = selectedCell?.r === rowIndex && selectedCell?.c === colIndex
-                    const isEditing = editingCell?.r === rowIndex && editingCell?.c === colIndex
-                    const cellData = engine.getCell(rowIndex, colIndex)
-                    const style = cellStyles[`${rowIndex},${colIndex}`] || {}
-                    const displayValue = cellData.error
-                      ? cellData.error
-                      : (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+        {/* ── Virtualized Grid Canvas ── */}
+        <VirtualGrid
+          engine={engine}
+          selectedCell={selectedCell}
+          setSelectedCell={setSelectedCell}
+          editingCell={editingCell}
+          editValue={editValue}
+          setEditValue={setEditValue}
+          commitEdit={commitEdit}
+          startEditing={startEditing}
+          cellStyles={cellStyles}
+          version={version}
+          forceRerender={forceRerender}
+          scrollContainerRef={scrollContainerRef}
+        />
 
-                    return (
-                      <td
-                        key={colIndex}
-                        className={`cell ${isSelected ? 'selected' : ''}`}
-                        style={{ background: style.bg || 'white' }}
-                        onMouseDown={(e) => { e.preventDefault(); handleCellClick(rowIndex, colIndex) }}
-                      >
-                        {isEditing ? (
-                          <input
-                            autoFocus
-                            className="cell-input"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => commitEdit(rowIndex, colIndex)}
-                            onKeyDown={(e) => handleKeyDown(e, rowIndex, colIndex)}
-                            ref={isSelected ? cellInputRef : undefined}
-                            style={{
-                              fontWeight: style.bold ? 'bold' : 'normal',
-                              fontStyle: style.italic ? 'italic' : 'normal',
-                              textDecoration: style.underline ? 'underline' : 'none',
-                              color: style.color || '#202124',
-                              fontSize: (style.fontSize || 13) + 'px',
-                              textAlign: style.align || 'left',
-                              background: style.bg || 'white',
-                            }}
-                          />
-                        ) : (
-                          <div
-                            className={`cell-display align-${style.align || 'left'} ${cellData.error ? 'error' : ''}`}
-                            style={{
-                              fontWeight: style.bold ? 'bold' : 'normal',
-                              fontStyle: style.italic ? 'italic' : 'normal',
-                              textDecoration: style.underline ? 'underline' : 'none',
-                              color: cellData.error ? '#d93025' : (style.color || '#202124'),
-                              fontSize: (style.fontSize || 13) + 'px',
-                            }}
-                          >
-                            {displayValue}
-                          </div>
-                        )}
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="footer-status-bar">
+          <span className="status-item">Rows: {engine.rows.toLocaleString()}</span>
+          <span className="status-item">Cols: {engine.cols}</span>
+          <span className="status-item">Selected: {getColumnLabel(selectedCell.c)}{selectedCell.r + 1}</span>
+          <span className="status-hint">Tip: Drag header border to resize · Double-click header to auto-fit · Ctrl+Home / PageUp / PageDown to navigate</span>
         </div>
-
-        <p className="footer-hint">
-          Click a cell to edit · Enter/Tab/Arrow keys to navigate · Formulas: =A1+B1 · =SUM(A1:A5) · =AVG(A1:A5) · =MAX(A1:A5) · =MIN(A1:A5)
-        </p>
       </div>
     </div>
   )

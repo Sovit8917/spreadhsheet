@@ -1,9 +1,12 @@
+import { createDimensionManager } from './dimensions.js'
+
 // ─────────────────────────────────────────────────────────────
 //  Operator precedence for expression parsing
 // ─────────────────────────────────────────────────────────────
 
 const OPERATOR_PRECEDENCE = { '+': 1, '-': 1, '*': 2, '/': 2 }
 const MAX_UNDO_HISTORY = 100
+
 
 // ─────────────────────────────────────────────────────────────
 //  Column / Cell coordinate utilities
@@ -29,9 +32,14 @@ function indexToCellKey(row, col) {
 }
 
 function parseCellKey(cellKey) {
-    const match = cellKey.match(/^([A-Z]+)(\d+)$/)
+    const match = cellKey.match(/^(\$?)([A-Z]+)(\$?)([0-9]+)$/)
     if (!match) return null
-    return { row: parseInt(match[2]) - 1, col: columnLetterToIndex(match[1]) }
+    return {
+        row: parseInt(match[4], 10) - 1,
+        col: columnLetterToIndex(match[2]),
+        colAbs: match[1] === '$',
+        rowAbs: match[3] === '$'
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -200,20 +208,27 @@ function tokenize(expression) {
             continue
         }
 
-        if ((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z')) {
+        if (char === '$' || (char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z')) {
             let identifier = ''
-            while (position < expression.length && ((expression[position] >= 'A' && expression[position] <= 'Z') || (expression[position] >= 'a' && expression[position] <= 'z') || (expression[position] >= '0' && expression[position] <= '9'))) {
+            while (position < expression.length && (
+                expression[position] === '$' ||
+                (expression[position] >= 'A' && expression[position] <= 'Z') ||
+                (expression[position] >= 'a' && expression[position] <= 'z') ||
+                (expression[position] >= '0' && expression[position] <= '9')
+            )) {
                 identifier += expression[position].toUpperCase()
                 position++
             }
             if (position < expression.length && expression[position] === ':') {
                 tokens.push({ type: 'cell', value: identifier })
             } else {
-                const cellMatch = identifier.match(/^([A-Z]+)(\d+)$/)
+                const cellMatch = identifier.match(/^(\$?)([A-Z]+)(\$?)([0-9]+)$/)
                 if (cellMatch) {
                     tokens.push({ type: 'cell', value: identifier })
-                } else {
+                } else if (!identifier.includes('$')) {
                     tokens.push({ type: 'function', value: identifier })
+                } else {
+                    throw new Error(`Invalid identifier: ${identifier}`)
                 }
             }
             continue
@@ -332,14 +347,14 @@ function buildASTFromRPN(rpnTokens) {
 // ─────────────────────────────────────────────────────────────
 
 function expandCellRange(startKey, endKey) {
-    const startMatch = startKey.match(/^([A-Z]+)(\d+)$/)
-    const endMatch = endKey.match(/^([A-Z]+)(\d+)$/)
+    const startMatch = startKey.match(/^(\$?)([A-Z]+)(\$?)([0-9]+)$/)
+    const endMatch = endKey.match(/^(\$?)([A-Z]+)(\$?)([0-9]+)$/)
     if (!startMatch || !endMatch) throw new Error('REF')
 
-    const startCol = columnLetterToIndex(startMatch[1])
-    const startRow = parseInt(startMatch[2]) - 1
-    const endCol = columnLetterToIndex(endMatch[1])
-    const endRow = parseInt(endMatch[2]) - 1
+    const startCol = columnLetterToIndex(startMatch[2])
+    const startRow = parseInt(startMatch[4], 10) - 1
+    const endCol = columnLetterToIndex(endMatch[2])
+    const endRow = parseInt(endMatch[4], 10) - 1
 
     const cells = []
     for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {
@@ -356,7 +371,7 @@ function evaluateAST(ast, getCellValue, visited = new Set()) {
     if (ast.type === 'number') return ast.value
 
     if (ast.type === 'cell') {
-        const key = ast.value
+        const key = ast.value.replace(/\$/g, '')
         if (visited.has(key)) throw new Error('CIRCULAR')
         visited.add(key)
         const value = getCellValue(key, visited)
@@ -431,39 +446,46 @@ function evaluateFormula(expression, getCellValue) {
 function shiftCellReferences(formula, rowShift, colShift, atIndex, isColumnOperation = false) {
     if (!formula || !formula.startsWith('=')) return formula
 
-    // Shift cell references in formulas when rows/columns are inserted or deleted
-    // Note: This function modifies ALL cell references in the formula, including those
-    // in ranges. The logic ensures references shift correctly based on the operation type.
-    return formula.replace(/([A-Z]+)(\d+)/g, (match, colLetter, rowStr) => {
+    return formula.replace(/(\$?)([A-Z]+)(\$?)([0-9]+)/g, (match, colDol, colLetter, rowDol, rowStr) => {
+        const isColAbs = colDol === '$'
+        const isRowAbs = rowDol === '$'
         const colIdx = columnLetterToIndex(colLetter)
-        const rowIdx = parseInt(rowStr) - 1
+        const rowIdx = parseInt(rowStr, 10) - 1
         let newRow = rowIdx
         let newCol = colIdx
 
         if (isColumnOperation) {
-            // For column operations, only shift columns at or after the insertion/deletion point
-            if (colIdx >= atIndex) newCol = colIdx + colShift
+            // If column is relative, shift if at or after insertion/deletion point
+            if (!isColAbs && colIdx >= atIndex) {
+                newCol = colIdx + colShift
+            }
         } else {
-            // For row operations, only shift rows at or after the insertion/deletion point
-            if (rowIdx >= atIndex) newRow = rowIdx + rowShift
+            // If row is relative, shift if at or after insertion/deletion point
+            if (!isRowAbs && rowIdx >= atIndex) {
+                newRow = rowIdx + rowShift
+            }
         }
 
-        // Preserve original reference if shifting would result in invalid coordinates
-        // This prevents formulas from breaking when rows/cols are deleted at boundaries
         if (newRow < 0 || newCol < 0) return match
-        return indexToCellKey(newRow, newCol)
+        const baseKey = indexToCellKey(newRow, newCol)
+        const parsed = parseCellKey(baseKey)
+        let colLabel = ''
+        let colNum = parsed.col + 1
+        while (colNum > 0) {
+            colNum--
+            colLabel = String.fromCharCode(65 + (colNum % 26)) + colLabel
+            colNum = Math.floor(colNum / 26)
+        }
+        return `${isColAbs ? '$' : ''}${colLabel}${isRowAbs ? '$' : ''}${parsed.row + 1}`
     })
 }
 
 function extractCellReferences(formula) {
     const references = new Set()
-    // Extract cell references using regex
-    // Note: This regex matches cell references like A1, B2, AA10, etc.
-    // It does NOT extract individual cells from ranges (e.g., A1:A5 only extracts A1 and A5)
-    const regex = /([A-Z]+\d+)/g
+    const regex = /(\$?)([A-Z]+)(\$?)([0-9]+)/g
     let match
     while ((match = regex.exec(formula)) !== null) {
-        references.add(match[1])
+        references.add(match[2] + match[4])
     }
     return references
 }
@@ -475,6 +497,9 @@ function extractCellReferences(formula) {
 export function createEngine(initialRows = 50, initialCols = 50) {
     let rows = initialRows
     let cols = initialCols
+    const rowHeights = createDimensionManager(initialRows, 25, 20)
+    const colWidths = createDimensionManager(initialCols, 100, 30)
+
     const cells = new Map()
     const graph = createDependencyGraph()
     const dirtyCells = new Set()
@@ -792,10 +817,37 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         recalculate()
     }
 
+    function executeSetRowHeight(row, height) {
+        if (row < 0 || row >= rows) return
+        const oldHeight = rowHeights.getSize(row)
+        const targetHeight = Math.max(rowHeights.minSize, Math.round(height))
+        if (oldHeight === targetHeight) return
+        pushToUndoStack({ type: 'rowheight', row, oldHeight, newHeight: targetHeight })
+        rowHeights.setSize(row, targetHeight)
+        _generation++
+    }
+
+    function executeSetColumnWidth(col, width) {
+        if (col < 0 || col >= cols) return
+        const oldWidth = colWidths.getSize(col)
+        const targetWidth = Math.max(colWidths.minSize, Math.round(width))
+        if (oldWidth === targetWidth) return
+        pushToUndoStack({ type: 'colwidth', col, oldWidth, newWidth: targetWidth })
+        colWidths.setSize(col, targetWidth)
+        _generation++
+    }
+
     function executeInsertRow(atIndex) {
         const snapshot = takeSnapshot()
         const previousRows = rows
-        pushToUndoStack({ type: 'rowins', snap: snapshot, oldRows: previousRows })
+        const previousRowHeights = rowHeights.snapshot()
+        pushToUndoStack({
+            type: 'rowins',
+            snap: snapshot,
+            oldRows: previousRows,
+            oldRowHeights: previousRowHeights
+        })
+        rowHeights.insertAt(atIndex)
         performInsertRow(atIndex)
         recalculate()
     }
@@ -803,7 +855,14 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function executeDeleteRow(atIndex) {
         const snapshot = takeSnapshot()
         const previousRows = rows
-        pushToUndoStack({ type: 'rowdel', snap: snapshot, oldRows: previousRows })
+        const previousRowHeights = rowHeights.snapshot()
+        pushToUndoStack({
+            type: 'rowdel',
+            snap: snapshot,
+            oldRows: previousRows,
+            oldRowHeights: previousRowHeights
+        })
+        rowHeights.deleteAt(atIndex)
         performDeleteRow(atIndex)
         recalculate()
     }
@@ -811,7 +870,14 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function executeInsertColumn(atIndex) {
         const snapshot = takeSnapshot()
         const previousCols = cols
-        pushToUndoStack({ type: 'colins', snap: snapshot, oldCols: previousCols })
+        const previousColWidths = colWidths.snapshot()
+        pushToUndoStack({
+            type: 'colins',
+            snap: snapshot,
+            oldCols: previousCols,
+            oldColWidths: previousColWidths
+        })
+        colWidths.insertAt(atIndex)
         performInsertColumn(atIndex)
         recalculate()
     }
@@ -819,7 +885,14 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function executeDeleteColumn(atIndex) {
         const snapshot = takeSnapshot()
         const previousCols = cols
-        pushToUndoStack({ type: 'coldel', snap: snapshot, oldCols: previousCols })
+        const previousColWidths = colWidths.snapshot()
+        pushToUndoStack({
+            type: 'coldel',
+            snap: snapshot,
+            oldCols: previousCols,
+            oldColWidths: previousColWidths
+        })
+        colWidths.deleteAt(atIndex)
         performDeleteColumn(atIndex)
         recalculate()
     }
@@ -829,27 +902,38 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         const entry = undoStack.pop()
 
         if (entry.type === 'set') {
-            // For cell edits, swap current value to redo stack and restore old value
             const currentValue = getCellRaw(entry.r, entry.c).raw
             redoStack.push({ ...entry, newVal: currentValue })
             setCellRaw(entry.r, entry.c, entry.oldVal)
             _generation++
             recalculate()
+        } else if (entry.type === 'rowheight') {
+            const currentHeight = rowHeights.getSize(entry.row)
+            redoStack.push({ ...entry, newHeight: currentHeight })
+            rowHeights.setSize(entry.row, entry.oldHeight)
+            _generation++
+        } else if (entry.type === 'colwidth') {
+            const currentWidth = colWidths.getSize(entry.col)
+            redoStack.push({ ...entry, newWidth: currentWidth })
+            colWidths.setSize(entry.col, entry.oldWidth)
+            _generation++
         } else {
-            // For structural changes (row/col insert/delete), save current state to redo
-            // and restore the snapshot from undo entry
-            // Note: The snapshot contains the cell data, but rows/cols must be restored separately
             redoStack.push({
                 ...entry,
                 restoreSnap: takeSnapshot(),
                 restoreRows: rows,
-                restoreCols: cols
+                restoreCols: cols,
+                restoreRowHeights: rowHeights.snapshot(),
+                restoreColWidths: colWidths.snapshot()
             })
             restoreSnapshot(entry.snap)
-            // Restore grid dimensions - this must happen after restoreSnapshot
-            // because restoreSnapshot increments _generation but doesn't modify rows/cols
-            if (entry.type === 'rowins' || entry.type === 'rowdel') rows = entry.oldRows
-            else if (entry.type === 'colins' || entry.type === 'coldel') cols = entry.oldCols
+            if (entry.type === 'rowins' || entry.type === 'rowdel') {
+                rows = entry.oldRows
+                if (entry.oldRowHeights) rowHeights.restore(entry.oldRowHeights)
+            } else if (entry.type === 'colins' || entry.type === 'coldel') {
+                cols = entry.oldCols
+                if (entry.oldColWidths) colWidths.restore(entry.oldColWidths)
+            }
             recalculate()
         }
         return true
@@ -865,16 +949,30 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             setCellRaw(entry.r, entry.c, entry.newVal)
             _generation++
             recalculate()
+        } else if (entry.type === 'rowheight') {
+            const currentHeight = rowHeights.getSize(entry.row)
+            undoStack.push({ ...entry, oldHeight: currentHeight })
+            rowHeights.setSize(entry.row, entry.newHeight)
+            _generation++
+        } else if (entry.type === 'colwidth') {
+            const currentWidth = colWidths.getSize(entry.col)
+            undoStack.push({ ...entry, oldWidth: currentWidth })
+            colWidths.setSize(entry.col, entry.newWidth)
+            _generation++
         } else {
             undoStack.push({
                 ...entry,
                 snap: takeSnapshot(),
                 oldRows: rows,
-                oldCols: cols
+                oldCols: cols,
+                oldRowHeights: rowHeights.snapshot(),
+                oldColWidths: colWidths.snapshot()
             })
             restoreSnapshot(entry.restoreSnap)
             rows = entry.restoreRows
             cols = entry.restoreCols
+            if (entry.restoreRowHeights) rowHeights.restore(entry.restoreRowHeights)
+            if (entry.restoreColWidths) colWidths.restore(entry.restoreColWidths)
             recalculate()
         }
         return true
@@ -885,23 +983,15 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function getCellForDisplay(row, col) {
         const cell = getCellRaw(row, col)
         const key = cellKey(row, col)
-        // Resolve the computed value (this may trigger recalculation if the cell is dirty)
-        // The resolveCellValue function handles caching and dependency resolution
         const value = resolveCellValue(key)
 
-        // Error values are strings starting with '#' (e.g., '#CYCLE!', '#VALUE!')
         if (typeof value === 'string' && value.startsWith('#')) {
             return { raw: cell.raw, computed: null, error: value }
         }
-        // Return the computed value (which may be a number or string)
-        // Note: Empty cells return '' as computed value, not null
         return { raw: cell.raw, computed: value, error: null }
     }
 
     // ── Public API ──
-    // The engine exposes a limited API to prevent direct access to internal state
-    // All cell operations go through the public methods which handle undo/redo,
-    // dependency tracking, and cache invalidation automatically
 
     return {
         get rows() { return rows },
@@ -916,13 +1006,31 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         redo,
         canUndo: () => undoStack.length > 0,
         canRedo: () => redoStack.length > 0,
-        // Grow the grid so that at least minRows x minCols exist. The engine is
-        // sparse, so this only moves the bounds; nothing is allocated.
         ensureCapacity: (minRows, minCols) => {
-            if (minRows > rows) rows = minRows
-            if (minCols > cols) cols = minCols
+            if (minRows > rows) {
+                rows = minRows
+                rowHeights.ensureCount(minRows)
+            }
+            if (minCols > cols) {
+                cols = minCols
+                colWidths.ensureCount(minCols)
+            }
         },
-        // Internal state is not exposed - if you need to serialize/deserialize,
-        // you'll need to work with the public API or add new methods
+        // Dimension methods for virtualization & resizing
+        rowHeights,
+        colWidths,
+        getRowHeight: (r) => rowHeights.getSize(r),
+        setRowHeight: executeSetRowHeight,
+        getColumnWidth: (c) => colWidths.getSize(c),
+        setColumnWidth: executeSetColumnWidth,
+        getRowOffset: (r) => rowHeights.getOffset(r),
+        getColumnOffset: (c) => colWidths.getOffset(c),
+        getTotalHeight: () => rowHeights.getTotalSize(),
+        getTotalWidth: () => colWidths.getTotalSize(),
+        findRowAtOffset: (y) => rowHeights.findIndexAtOffset(y),
+        findColumnAtOffset: (x) => colWidths.findIndexAtOffset(x),
+        getVisibleRowRange: (start, end, overscan) => rowHeights.getVisibleRange(start, end, overscan),
+        getVisibleColumnRange: (start, end, overscan) => colWidths.getVisibleRange(start, end, overscan)
     }
 }
+

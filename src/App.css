@@ -196,8 +196,19 @@ body {
   background: #1557b0;
 }
 
-/* ── Formula Bar ── */
-.formula-bar {
+.scale-badge {
+  margin-left: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1a73e8;
+  background: #e8f0fe;
+  padding: 3px 8px;
+  border-radius: 12px;
+  border: 1px solid #d2e3fc;
+}
+
+/* ── Formula Bar & Name Box ── */
+.formula-bar-container {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -207,17 +218,38 @@ body {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-.formula-bar-label {
-  font-size: 13px;
-  color: #5f6368;
-  white-space: nowrap;
-  min-width: 60px;
-  font-weight: 500;
-  background: #f8f9fa;
-  padding: 6px 10px;
+.name-box-wrapper {
+  width: 90px;
+}
+
+.name-box-input {
+  width: 100%;
+  border: 1px solid #dadce0;
   border-radius: 4px;
-  border: 1px solid #e0e0e0;
+  outline: none;
+  font-size: 13px;
+  font-weight: 600;
+  color: #202124;
+  background: #f8f9fa;
+  padding: 5px 8px;
   text-align: center;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.name-box-input:focus {
+  border-color: #1a73e8;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+.formula-bar-fx-label {
+  font-size: 14px;
+  font-weight: 700;
+  font-style: italic;
+  color: #5f6368;
+  user-select: none;
+  padding: 0 4px;
 }
 
 .formula-bar-input {
@@ -240,6 +272,27 @@ body {
 
 .formula-bar-input::placeholder {
   color: #9aa0a6;
+}
+
+.footer-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  background: #f8f9fa;
+  border-top: 1px solid #dadce0;
+  font-size: 12px;
+  color: #5f6368;
+}
+
+.status-item {
+  font-weight: 500;
+}
+
+.status-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: #70757a;
 }
 
 /* ── Grid ── */
