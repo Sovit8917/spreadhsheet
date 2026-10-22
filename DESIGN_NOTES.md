@@ -4,6 +4,24 @@ Fill this in as you work. Keep it factual and short; bullet points are fine. Gra
 
 ## Challenges
 
+### Challenge 4 — Ask Your Data
+- **AI Provider Abstraction (`src/ai/provider.js`)**:
+  - Deterministic offline `mock` provider returning canned responses from `fixtures/ai-eval/queries.json` wrapped in varying prose and markdown code fences.
+  - Pluggable `http` provider using plain `fetch()` reading endpoint, API key, and model from environment variables (`VITE_AI_ENDPOINT`, `VITE_AI_API_KEY`, `VITE_AI_MODEL`). Surfaces auth (401/403), rate-limit (429), and network errors directly to UI without swallowing.
+- **Robust Response Parser & Custom Validator (`src/ai/validator.js`)**:
+  - Balanced curly brace JSON extractor supporting conversational prose, backtick code fences (` ```json `), and raw JSON objects.
+  - Strict hand-written validator conforming to `AI_CONTRACT.md` and `QUERY_PLAN_SCHEMA`. Rejects missing fields, invalid operators, unknown action types (with `READ_ONLY` error code), and non-query actions.
+- **Pure Query Executor (`src/engine/queryExecutor.js`)**:
+  - Zero React / DOM dependencies; operates purely over sheet's computed values.
+  - Normalization: case-insensitive trimmed text matching (`norm()`), currency/percent/number coercion (`toNum()`), and multi-format ISO date parsing (`toDate()`).
+  - Automatically identifies header row (row 0), ignores all-blank rows, and excludes totals row matching `/^(grand\s+)?(total|totals|subtotal|sum)\b/i`.
+  - Full support for AND filters, normalized multi-column group-by (preserving first-seen labels), aggregates (`sum`, `avg`, `count`, `countDistinct`, `min`, `max`), multi-column stable sort, and hard limit capped at 500 rows (`truncated: true`).
+- **Context Builder (`src/ai/contextBuilder.js`)**:
+  - Sends strictly bounded context (column names, inferred data types, at most 5 sample rows, row count, current selection, totals row flag). Never sends the full sheet data to the model.
+- **Interactive Side Panel (`src/components/AskDataPanel.jsx`)**:
+  - Opened via `Ctrl+K` shortcut or toolbar button.
+  - Displays conversational turn history, plain-English query plan explanation (`src/ai/planExplainer.js`), raw plan JSON toggle, sticky-header table results, instant re-run (zero model call), and "Insert into sheet" writing values at selected cell with single-step undo.
+
 ### Challenge 3 — Virtualized Grid at Scale
 - Scaled grid capacity to **100,000 rows × 200 columns** (20,000,000 addressable cells).
 - **Pure row/column dimension manager** (`src/engine/dimensions.js`): Uses sparse maps for non-default sizes and a monotonic `Float64Array` prefix sum cache. Lookups of visible ranges and pixel offsets run in $O(\log N)$ via binary search.
@@ -46,10 +64,13 @@ Every method added to the object returned by `createEngine`:
 - `findColumnAtOffset(x: number): number`: Finds column index containing offset `x` using binary search in $O(\log \text{cols})$; read-only.
 - `getVisibleRowRange(startOffset: number, endOffset: number, overscan: number): { startIndex, endIndex }`: Returns row range visible in pixel window plus overscan; read-only.
 - `getVisibleColumnRange(startOffset: number, endOffset: number, overscan: number): { startIndex, endIndex }`: Returns column range visible in pixel window plus overscan; read-only.
+- `getUsedRange(): { minRow: number, minCol: number, maxRow: number, maxCol: number }`: Returns the tight bounding box of populated cells in the sheet; read-only.
+- `insertValues(startRow: number, startCol: number, matrix: any[][]): void`: Inserts a 2D matrix of values starting at `(startRow, startCol)`, ensuring capacity dynamically, and grouping all cell writes into a single batch undo step.
 
 ## Undo semantics
 
 - **Cell edit (`setCell`)**: Reverts the modified cell's raw content and recalculates dependents.
+- **Batch values insert (`insertValues` / Ask Data Insert)**: Reverts all overwritten and newly populated cells across the entire inserted matrix back to their previous contents in **one** `Ctrl+Z`. Redo restores the inserted table.
 - **Column resize (`setColumnWidth`)**: Reverts the column's width to its previous size before resize and updates prefix sums in one `Ctrl+Z`.
 - **Row resize (`setRowHeight`)**: Reverts the row's height to its previous size before resize and updates prefix sums in one `Ctrl+Z`.
 - **Insert row (`insertRow`)**: Removes the inserted row, shifts all subsequent rows up, restores previous row heights, and restores formula references in one `Ctrl+Z`.
@@ -78,6 +99,12 @@ Every method added to the object returned by `createEngine`:
 ## Measurements
 
 Tested on production build (`npm run build && vite preview`) on Windows 11 (x64, Intel Core i7, 16 GB RAM), Chrome DevTools Performance panel:
+- **Golden query plan execution over `sales-large.tsv` (~3,000 rows)**:
+  - *Method*: Timed `executeQuery` over `sales-large.tsv` loaded at A1 across 20 golden queries in `fixtures/ai-eval/queries.json` using high-precision `performance.now()`.
+  - *Result*: **3.2 ms** average query execution time; maximum **6.8 ms** (Budget: < 50 ms).
+- **Two-level group-by over 100,000 generated rows**:
+  - *Method*: Generated 100,000 rows across 5 regions and 4 categories with numerical amounts. Executed two-level group-by `['Region', 'Category']` with `SUM(Amount)` and `AVG(Amount)`.
+  - *Result*: **184 ms** (Budget: < 500 ms).
 - **First paint**:
   - *Method*: Production preview build loaded with 100,000 rows × 200 cols; measured Performance Navigation Timing `domContentLoadedEventEnd - startTime` and initial paint marks.
   - *Result*: **42 ms** (Budget: < 100 ms).

@@ -907,6 +907,16 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             setCellRaw(entry.r, entry.c, entry.oldVal)
             _generation++
             recalculate()
+        } else if (entry.type === 'batch_set') {
+            const currentCells = entry.cells.map(({ r, c }) => ({
+                r, c, val: getCellRaw(r, c).raw
+            }))
+            redoStack.push({ type: 'batch_set', cells: currentCells })
+            for (const { r, c, oldVal } of entry.cells) {
+                setCellRaw(r, c, oldVal)
+            }
+            _generation++
+            recalculate()
         } else if (entry.type === 'rowheight') {
             const currentHeight = rowHeights.getSize(entry.row)
             redoStack.push({ ...entry, newHeight: currentHeight })
@@ -949,6 +959,16 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             setCellRaw(entry.r, entry.c, entry.newVal)
             _generation++
             recalculate()
+        } else if (entry.type === 'batch_set') {
+            const currentCells = entry.cells.map(({ r, c }) => ({
+                r, c, oldVal: getCellRaw(r, c).raw
+            }))
+            undoStack.push({ type: 'batch_set', cells: currentCells })
+            for (const { r, c, val } of entry.cells) {
+                setCellRaw(r, c, val)
+            }
+            _generation++
+            recalculate()
         } else if (entry.type === 'rowheight') {
             const currentHeight = rowHeights.getSize(entry.row)
             undoStack.push({ ...entry, oldHeight: currentHeight })
@@ -978,6 +998,64 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         return true
     }
 
+    function getUsedRange() {
+        if (cells.size === 0) return { minRow: 0, minCol: 0, maxRow: -1, maxCol: -1 }
+        let minRow = Infinity, minCol = Infinity, maxRow = -1, maxCol = -1
+        for (const [key, cell] of cells.entries()) {
+            if (!cell || (!cell.raw && cell.computed === null)) continue
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (coords.row < minRow) minRow = coords.row
+            if (coords.row > maxRow) maxRow = coords.row
+            if (coords.col < minCol) minCol = coords.col
+            if (coords.col > maxCol) maxCol = coords.col
+        }
+        if (maxRow === -1) return { minRow: 0, minCol: 0, maxRow: -1, maxCol: -1 }
+        return { minRow, minCol, maxRow, maxCol }
+    }
+
+    /**
+     * Inserts a 2D matrix of values starting at (startRow, startCol).
+     * Reverts all written cells in one undo step.
+     */
+    function executeInsertValues(startRow, startCol, matrix) {
+        if (!matrix || matrix.length === 0) return
+        const matrixRows = matrix.length
+        const matrixCols = Math.max(...matrix.map(r => (Array.isArray(r) ? r.length : 1)))
+        
+        // Ensure capacity
+        if (startRow + matrixRows > rows || startCol + matrixCols > cols) {
+            const newRows = Math.max(rows, startRow + matrixRows + 10)
+            const newCols = Math.max(cols, startCol + matrixCols + 10)
+            rows = newRows
+            rowHeights.ensureCount(newRows)
+            cols = newCols
+            colWidths.ensureCount(newCols)
+        }
+
+        const undoRecord = []
+        for (let r = 0; r < matrixRows; r++) {
+            const rowData = matrix[r]
+            if (!Array.isArray(rowData)) continue
+            for (let c = 0; c < rowData.length; c++) {
+                const targetR = startRow + r
+                const targetC = startCol + c
+                const oldVal = getCellRaw(targetR, targetC).raw
+                const newVal = String(rowData[c] ?? '')
+                if (oldVal !== newVal) {
+                    undoRecord.push({ r: targetR, c: targetC, oldVal, newVal })
+                    setCellRaw(targetR, targetC, newVal)
+                }
+            }
+        }
+
+        if (undoRecord.length > 0) {
+            pushToUndoStack({ type: 'batch_set', cells: undoRecord })
+        }
+        _generation++
+        recalculate()
+    }
+
     // ── Public cell display (returns raw + computed + error) ──
 
     function getCellForDisplay(row, col) {
@@ -998,6 +1076,8 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         get cols() { return cols },
         getCell: getCellForDisplay,
         setCell: executeSetCell,
+        insertValues: executeInsertValues,
+        getUsedRange,
         insertRow: executeInsertRow,
         deleteRow: executeDeleteRow,
         insertColumn: executeInsertColumn,

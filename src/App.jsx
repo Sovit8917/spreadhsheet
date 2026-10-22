@@ -3,6 +3,7 @@ import './App.css'
 import { createEngine } from './engine/core.js'
 import { loadSampleSmall, loadSampleLarge } from './fixtures/loadSample.js'
 import VirtualGrid from './components/VirtualGrid.jsx'
+import AskDataPanel from './components/AskDataPanel.jsx'
 
 // Challenge 3 requires 100,000 rows x 200 columns
 const TOTAL_ROWS = 100000
@@ -17,6 +18,7 @@ export default function App() {
   const [cellStyles, setCellStyles] = useState({})
   // Name Box input state: null means it automatically mirrors selectedCell
   const [nameBoxOverride, setNameBoxOverride] = useState(null)
+  const [isAskDataOpen, setIsAskDataOpen] = useState(false)
 
   const scrollContainerRef = useRef(null)
 
@@ -103,6 +105,13 @@ export default function App() {
     const isNameBox = activeEl && activeEl.classList.contains('name-box-input')
     const isFormulaBar = activeEl && activeEl.classList.contains('formula-bar-input')
     const isCellInput = activeEl && activeEl.classList.contains('virtual-cell-input')
+
+    // Ctrl+K: Toggle Ask Data Side Panel
+    if ((event.ctrlKey || event.metaKey) && (event.key === 'k' || event.key === 'K')) {
+      event.preventDefault()
+      setIsAskDataOpen(prev => !prev)
+      return
+    }
 
     if (isNameBox) return
 
@@ -437,6 +446,17 @@ export default function App() {
             <button className="toolbar-btn" onClick={() => loadSample(loadSampleSmall)} title="Load fixtures/sales.tsv (33 rows) at A1">⬇ Sample 33</button>
             <button className="toolbar-btn" onClick={() => loadSample(loadSampleLarge)} title="Load fixtures/sales-large.tsv (~3,000 rows) at A1">⬇ Sample 3k</button>
           </div>
+
+          <div className="toolbar-group">
+            <button
+              className={`toolbar-btn ${isAskDataOpen ? 'active' : ''}`}
+              onClick={() => setIsAskDataOpen(prev => !prev)}
+              title="Ask Your Data (Ctrl+K)"
+              style={{ background: isAskDataOpen ? '#e8f0fe' : '#ffffff', color: '#1a73e8', fontWeight: 600, borderColor: '#1a73e8' }}
+            >
+              ✨ Ask Data (Ctrl+K)
+            </button>
+          </div>
         </div>
 
         {/* ── Formula Bar & Name Box ── */}
@@ -461,27 +481,37 @@ export default function App() {
           />
         </div>
 
-        {/* ── Virtualized Grid Canvas ── */}
-        <VirtualGrid
-          engine={engine}
-          selectedCell={selectedCell}
-          setSelectedCell={setSelectedCell}
-          editingCell={editingCell}
-          editValue={editValue}
-          setEditValue={setEditValue}
-          commitEdit={commitEdit}
-          startEditing={startEditing}
-          cellStyles={cellStyles}
-          version={version}
-          forceRerender={forceRerender}
-          scrollContainerRef={scrollContainerRef}
-        />
+        {/* ── Virtualized Grid Canvas & Side Panel Container ── */}
+        <div className="workspace-layout">
+          <VirtualGrid
+            engine={engine}
+            selectedCell={selectedCell}
+            setSelectedCell={setSelectedCell}
+            editingCell={editingCell}
+            editValue={editValue}
+            setEditValue={setEditValue}
+            commitEdit={commitEdit}
+            startEditing={startEditing}
+            cellStyles={cellStyles}
+            version={version}
+            forceRerender={forceRerender}
+            scrollContainerRef={scrollContainerRef}
+          />
+
+          <AskDataPanel
+            isOpen={isAskDataOpen}
+            onClose={() => setIsAskDataOpen(false)}
+            engine={engine}
+            selectedCell={selectedCell}
+            forceRerender={forceRerender}
+          />
+        </div>
 
         <div className="footer-status-bar">
           <span className="status-item">Rows: {engine.rows.toLocaleString()}</span>
           <span className="status-item">Cols: {engine.cols}</span>
           <span className="status-item">Selected: {getColumnLabel(selectedCell.c)}{selectedCell.r + 1}</span>
-          <span className="status-hint">Tip: Drag header border to resize · Double-click header to auto-fit · Ctrl+Home / PageUp / PageDown to navigate</span>
+          <span className="status-hint">Tip: Drag header border to resize · Double-click header to auto-fit · Ctrl+K to Ask Your Data</span>
         </div>
       </div>
     </div>
