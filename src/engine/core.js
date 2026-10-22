@@ -1,15 +1,15 @@
 // ─────────────────────────────────────────────────────────────
-//  Operator precedence for expression parsing
+//  Pure Spreadsheet Engine - Task 2: Sort, Filter, Row Identity
 // ─────────────────────────────────────────────────────────────
 
-const OPERATOR_PRECEDENCE = { '+': 1, '-': 1, '*': 2, '/': 2 }
-const MAX_UNDO_HISTORY = 100
+export const OPERATOR_PRECEDENCE = { '+': 1, '-': 1, '*': 2, '/': 2 }
+export const MAX_UNDO_HISTORY = 100
 
 // ─────────────────────────────────────────────────────────────
 //  Column / Cell coordinate utilities
 // ─────────────────────────────────────────────────────────────
 
-function columnLetterToIndex(columnLetter) {
+export function columnLetterToIndex(columnLetter) {
     let index = 0
     for (let i = 0; i < columnLetter.length; i++) {
         index = index * 26 + (columnLetter.charCodeAt(i) - 64)
@@ -17,7 +17,7 @@ function columnLetterToIndex(columnLetter) {
     return index - 1
 }
 
-function indexToCellKey(row, col) {
+export function indexToCellKey(row, col) {
     let columnLabel = ''
     let colNumber = col + 1
     while (colNumber > 0) {
@@ -28,10 +28,104 @@ function indexToCellKey(row, col) {
     return columnLabel + (row + 1)
 }
 
-function parseCellKey(cellKey) {
+export function parseCellKey(cellKey) {
     const match = cellKey.match(/^([A-Z]+)(\d+)$/)
     if (!match) return null
-    return { row: parseInt(match[2]) - 1, col: columnLetterToIndex(match[1]) }
+    return { row: parseInt(match[2], 10) - 1, col: columnLetterToIndex(match[1]) }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Data type coercion and normalisation (Contract §3.2 & Task 2)
+// ─────────────────────────────────────────────────────────────
+
+export function normText(v) {
+    if (v === null || v === undefined) return ''
+    return String(v).trim().toLowerCase()
+}
+
+export function toNum(v) {
+    if (v === null || v === undefined) return null
+    if (typeof v === 'number') return isNaN(v) ? null : v
+    let s = String(v).trim()
+    if (!s) return null
+    const hasPercent = s.endsWith('%')
+    s = s.replace(/[\$,\s%]/g, '')
+    if (!/^-?\d+(\.\d+)?$/.test(s)) return null
+    const num = parseFloat(s)
+    if (isNaN(num)) return null
+    return hasPercent ? num / 100 : num
+}
+
+const MONTHS = {
+    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12'
+}
+
+export function toDate(v) {
+    if (v === null || v === undefined) return null
+    const s = String(v).trim()
+    if (!s) return null
+
+    // 1. YYYY-M-D or YYYY-MM-DD
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+    if (m) {
+        const y = m[1], mo = m[2].padStart(2, '0'), d = m[3].padStart(2, '0')
+        return `${y}-${mo}-${d}`
+    }
+
+    // 2. M/D/YYYY
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+    if (m) {
+        const mo = m[1].padStart(2, '0'), d = m[2].padStart(2, '0'), y = m[3]
+        return `${y}-${mo}-${d}`
+    }
+
+    // 3. D Mon YYYY (e.g. 15 Jan 2024 or 20 Feb 2024)
+    m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})$/)
+    if (m) {
+        const d = m[1].padStart(2, '0')
+        const monKey = m[2].slice(0, 3).toLowerCase()
+        const mo = MONTHS[monKey]
+        if (mo) {
+            return `${m[3]}-${mo}-${d}`
+        }
+    }
+
+    return null
+}
+
+export function compareValues(a, b) {
+    const isBlankA = a === null || a === undefined || a === ''
+    const isBlankB = b === null || b === undefined || b === ''
+    if (isBlankA && isBlankB) return 0
+    if (isBlankA) return 1  // blanks always sort last
+    if (isBlankB) return -1
+
+    const numA = toNum(a)
+    const numB = toNum(b)
+    const isNumA = numA !== null
+    const isNumB = numB !== null
+
+    if (isNumA && isNumB) {
+        return numA < numB ? -1 : (numA > numB ? 1 : 0)
+    }
+    if (isNumA) return -1 // numbers before non-numbers
+    if (isNumB) return 1
+
+    const dateA = toDate(a)
+    const dateB = toDate(b)
+    const isDateA = dateA !== null
+    const isDateB = dateB !== null
+
+    if (isDateA && isDateB) {
+        return dateA < dateB ? -1 : (dateA > dateB ? 1 : 0)
+    }
+    if (isDateA) return -1 // dates before generic text
+    if (isDateB) return 1
+
+    const textA = normText(a)
+    const textB = normText(b)
+    return textA < textB ? -1 : (textA > textB ? 1 : 0)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -157,7 +251,7 @@ function createDependencyGraph() {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Tokenizer — converts formula string into tokens
+//  Tokenizer — converts formula string into tokens (supports $)
 // ─────────────────────────────────────────────────────────────
 
 function tokenize(expression) {
@@ -200,16 +294,21 @@ function tokenize(expression) {
             continue
         }
 
-        if ((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z')) {
+        if ((char >= 'A' && char <= 'Z') || (char >= 'a' && char <= 'z') || char === '$') {
             let identifier = ''
-            while (position < expression.length && ((expression[position] >= 'A' && expression[position] <= 'Z') || (expression[position] >= 'a' && expression[position] <= 'z') || (expression[position] >= '0' && expression[position] <= '9'))) {
+            while (position < expression.length && (
+                (expression[position] >= 'A' && expression[position] <= 'Z') ||
+                (expression[position] >= 'a' && expression[position] <= 'z') ||
+                (expression[position] >= '0' && expression[position] <= '9') ||
+                expression[position] === '$'
+            )) {
                 identifier += expression[position].toUpperCase()
                 position++
             }
             if (position < expression.length && expression[position] === ':') {
                 tokens.push({ type: 'cell', value: identifier })
             } else {
-                const cellMatch = identifier.match(/^([A-Z]+)(\d+)$/)
+                const cellMatch = identifier.match(/^\$?([A-Z]+)\$?(\d+)$/)
                 if (cellMatch) {
                     tokens.push({ type: 'cell', value: identifier })
                 } else {
@@ -331,15 +430,21 @@ function buildASTFromRPN(rpnTokens) {
 //  Evaluator — walks the AST and computes values
 // ─────────────────────────────────────────────────────────────
 
+function cleanCellRef(ref) {
+    return ref.replace(/\$/g, '')
+}
+
 function expandCellRange(startKey, endKey) {
-    const startMatch = startKey.match(/^([A-Z]+)(\d+)$/)
-    const endMatch = endKey.match(/^([A-Z]+)(\d+)$/)
+    const cleanStart = cleanCellRef(startKey)
+    const cleanEnd = cleanCellRef(endKey)
+    const startMatch = cleanStart.match(/^([A-Z]+)(\d+)$/)
+    const endMatch = cleanEnd.match(/^([A-Z]+)(\d+)$/)
     if (!startMatch || !endMatch) throw new Error('REF')
 
     const startCol = columnLetterToIndex(startMatch[1])
-    const startRow = parseInt(startMatch[2]) - 1
+    const startRow = parseInt(startMatch[2], 10) - 1
     const endCol = columnLetterToIndex(endMatch[1])
-    const endRow = parseInt(endMatch[2]) - 1
+    const endRow = parseInt(endMatch[2], 10) - 1
 
     const cells = []
     for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {
@@ -356,7 +461,7 @@ function evaluateAST(ast, getCellValue, visited = new Set()) {
     if (ast.type === 'number') return ast.value
 
     if (ast.type === 'cell') {
-        const key = ast.value
+        const key = cleanCellRef(ast.value)
         if (visited.has(key)) throw new Error('CIRCULAR')
         visited.add(key)
         const value = getCellValue(key, visited)
@@ -388,8 +493,8 @@ function evaluateAST(ast, getCellValue, visited = new Set()) {
             visited.add(cellKey)
             const value = getCellValue(cellKey, visited)
             visited.delete(cellKey)
-            const num = parseFloat(value)
-            return isNaN(num) ? 0 : num
+            const num = toNum(value)
+            return num === null ? (isNaN(parseFloat(value)) ? 0 : parseFloat(value)) : num
         })
 
         switch (ast.name) {
@@ -425,47 +530,89 @@ function evaluateFormula(expression, getCellValue) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Reference shifting (for insert/delete row/col)
+//  Reference shifting & rewrite
 // ─────────────────────────────────────────────────────────────
 
 function shiftCellReferences(formula, rowShift, colShift, atIndex, isColumnOperation = false) {
     if (!formula || !formula.startsWith('=')) return formula
 
-    // Shift cell references in formulas when rows/columns are inserted or deleted
-    // Note: This function modifies ALL cell references in the formula, including those
-    // in ranges. The logic ensures references shift correctly based on the operation type.
-    return formula.replace(/([A-Z]+)(\d+)/g, (match, colLetter, rowStr) => {
+    return formula.replace(/(\$?)([A-Z]+)(\$?)(\d+)/g, (match, colAbs, colLetter, rowAbs, rowStr) => {
         const colIdx = columnLetterToIndex(colLetter)
-        const rowIdx = parseInt(rowStr) - 1
+        const rowIdx = parseInt(rowStr, 10) - 1
         let newRow = rowIdx
         let newCol = colIdx
 
         if (isColumnOperation) {
-            // For column operations, only shift columns at or after the insertion/deletion point
             if (colIdx >= atIndex) newCol = colIdx + colShift
         } else {
-            // For row operations, only shift rows at or after the insertion/deletion point
             if (rowIdx >= atIndex) newRow = rowIdx + rowShift
         }
 
-        // Preserve original reference if shifting would result in invalid coordinates
-        // This prevents formulas from breaking when rows/cols are deleted at boundaries
         if (newRow < 0 || newCol < 0) return match
-        return indexToCellKey(newRow, newCol)
+        const newColLetter = indexToCellKey(0, newCol).replace(/\d+/, '')
+        return `${colAbs}${newColLetter}${rowAbs}${newRow + 1}`
     })
 }
 
 function extractCellReferences(formula) {
     const references = new Set()
-    // Extract cell references using regex
-    // Note: This regex matches cell references like A1, B2, AA10, etc.
-    // It does NOT extract individual cells from ranges (e.g., A1:A5 only extracts A1 and A5)
-    const regex = /([A-Z]+\d+)/g
+    const regex = /\$?([A-Z]+)\$?(\d+)/g
     let match
     while ((match = regex.exec(formula)) !== null) {
-        references.add(match[1])
+        references.add(match[1] + match[2])
     }
     return references
+}
+
+/**
+ * Rewrites single cell references in a formula using rowMapping and preserves ranges.
+ * Range spanning the whole block (e.g. J2:J32) or any range is unchanged if it spans the block.
+ */
+export function rewriteFormulaForSort(formula, rowMapping, blockStartRow, blockEndRow) {
+    if (!formula || !formula.startsWith('=')) return formula
+
+    const tokens = []
+    const rangeRegex = /([A-Za-z0-9_]+)?\(\s*(\$?)([A-Z]+)(\$?)(\d+)\s*:\s*(\$?)([A-Z]+)(\$?)(\d+)\s*\)|(\$?)([A-Z]+)(\$?)(\d+)/g
+    let lastIndex = 0
+    let result = ''
+    let m
+
+    while ((m = rangeRegex.exec(formula)) !== null) {
+        result += formula.slice(lastIndex, m.index)
+        if (m[3] !== undefined) {
+            // It's a range like SUM($J$2:$J$32) or J2:J32
+            const fn = m[1] || ''
+            const startColAbs = m[2], startCol = m[3], startRowAbs = m[4], startRowStr = m[5]
+            const endColAbs = m[6], endCol = m[7], endRowAbs = m[8], endRowStr = m[9]
+            const sRow = parseInt(startRowStr, 10) - 1
+            const eRow = parseInt(endRowStr, 10) - 1
+            const minR = Math.min(sRow, eRow)
+            const maxR = Math.max(sRow, eRow)
+
+            // If range spans the whole sorted block, keep it unchanged
+            if (minR <= blockStartRow && maxR >= blockEndRow) {
+                result += m[0]
+            } else {
+                // Otherwise update endpoints if mapped
+                const newSRow = rowMapping.has(sRow) ? rowMapping.get(sRow) : sRow
+                const newERow = rowMapping.has(eRow) ? rowMapping.get(eRow) : eRow
+                if (fn) {
+                    result += `${fn}(${startColAbs}${startCol}${startRowAbs}${newSRow + 1}:${endColAbs}${endCol}${endRowAbs}${newERow + 1})`
+                } else {
+                    result += `${startColAbs}${startCol}${startRowAbs}${newSRow + 1}:${endColAbs}${endCol}${endRowAbs}${newERow + 1}`
+                }
+            }
+        } else {
+            // Single cell reference
+            const colAbs = m[10], col = m[11], rowAbs = m[12], rowStr = m[13]
+            const r = parseInt(rowStr, 10) - 1
+            const newR = rowMapping.has(r) ? rowMapping.get(r) : r
+            result += `${colAbs}${col}${rowAbs}${newR + 1}`
+        }
+        lastIndex = rangeRegex.lastIndex
+    }
+    result += formula.slice(lastIndex)
+    return result
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -476,14 +623,14 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     let rows = initialRows
     let cols = initialCols
     const cells = new Map()
+    const rowIdentities = new Map() // row index -> stable id
+    let nextRowId = 1
     const graph = createDependencyGraph()
     const dirtyCells = new Set()
     const computedCache = new Map()
     const undoStack = []
     const redoStack = []
 
-    // Internal generation counter — incremented on every structural mutation.
-    // Used by the cache to validate entries and by the engine to track state integrity.
     let _generation = 0
     let _batchMode = false
     let _batchCallbacks = []
@@ -504,13 +651,9 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     }
 
     function updateDependencies(cell, rawFormula) {
-        // Extract all cell references from the formula
-        // Note: This includes references in ranges (e.g., A1:A5 includes A1, A2, A3, A4, A5)
-        // but the current implementation only tracks the range endpoints
         for (const ref of extractCellReferences(rawFormula)) {
             if (isValidCellKey(ref)) graph.addDependency(cell, ref)
         }
-        // TODO: Consider tracking individual cells within ranges for more granular dependency tracking
     }
 
     function markCellDirty(cell) {
@@ -524,6 +667,21 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         for (const key of cells.keys()) dirtyCells.add(key)
     }
 
+    function getRowId(r) {
+        if (!rowIdentities.has(r)) {
+            rowIdentities.set(r, nextRowId++)
+        }
+        return rowIdentities.get(r)
+    }
+
+    function ensureRowIdsUpTo(maxRow) {
+        for (let r = 0; r <= maxRow; r++) {
+            if (!rowIdentities.has(r)) {
+                rowIdentities.set(r, nextRowId++)
+            }
+        }
+    }
+
     // ── Value resolution ──
 
     function resolveCellValue(cellKey, visited = new Set()) {
@@ -532,9 +690,6 @@ export function createEngine(initialRows = 50, initialCols = 50) {
 
         if (computedCache.has(cellKey)) {
             const cached = computedCache.get(cellKey)
-            // Validate cache generation — stale entries from a previous generation are discarded
-            // Note: _generation is incremented on structural changes, but cache validation
-            // must account for cells that may have been invalidated by dependency changes
             if (cached._gen === _generation && !dirtyCells.has(cellKey)) {
                 visited.delete(cellKey)
                 return cached.error || cached.computed
@@ -574,15 +729,12 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         const affected = new Set(dirtyCells)
         const sorted = graph.topologicalSort(affected)
 
-        // Process sorted cells first (topological order ensures dependencies are resolved)
         for (const cell of sorted) {
             if (dirtyCells.has(cell)) {
                 computedCache.delete(cell)
                 resolveCellValue(cell)
             }
         }
-        // Process any remaining affected cells that weren't in the sorted list
-        // (e.g., cells with no dependencies or circular dependencies)
         for (const cell of affected) {
             if (!sorted.includes(cell)) {
                 computedCache.delete(cell)
@@ -592,8 +744,6 @@ export function createEngine(initialRows = 50, initialCols = 50) {
 
         dirtyCells.clear()
 
-        // Notify batch listeners if in batch mode
-        // WARNING: Batch mode is currently unused but may be needed for future features
         if (_batchMode) {
             _batchCallbacks.forEach(cb => cb())
         }
@@ -635,17 +785,11 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         return { ...cell }
     }
 
-    // ── Snapshot / Restore (for undo of structural changes) ──
+    // ── Snapshot / Restore ──
 
     function takeSnapshot() {
-        // Create a deep copy of all cell data for undo/redo operations
-        // Note: This only captures cell data, not the dependency graph or cache
-        // The dependency graph is rebuilt from the cell formulas when restoring
         const snapshot = new Map()
         for (const [key, value] of cells.entries()) {
-            // Create a shallow copy of the cell object
-            // The cell object contains: { raw: string, computed: number|null, error: string|null }
-            // Note: computed and error are not persisted in snapshots - they're recalculated on restore
             snapshot.set(key, { ...value })
         }
         return snapshot
@@ -660,15 +804,236 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         computedCache.clear()
         dirtyCells.clear()
         _generation++
-        // Rebuild dependency graph from restored cells
-        // Important: This must happen before marking cells dirty to ensure correct dependency tracking
         for (const [key, value] of cells.entries()) {
             if (value.raw && value.raw.startsWith('=')) updateDependencies(key, value.raw)
         }
         markAllCellsDirty()
     }
 
-    // ── Row / Column structural operations ──
+    // ── Used range & Totals row detection ──
+
+    function getUsedRange() {
+        let minR = Infinity, maxR = -1, minC = Infinity, maxC = -1
+        for (const key of cells.keys()) {
+            const cell = cells.get(key)
+            if (cell && cell.raw && cell.raw.trim() !== '') {
+                const coords = cellCoords(key)
+                if (coords) {
+                    if (coords.row < minR) minR = coords.row
+                    if (coords.row > maxR) maxR = coords.row
+                    if (coords.col < minC) minC = coords.col
+                    if (coords.col > maxC) maxC = coords.col
+                }
+            }
+        }
+        if (maxR === -1) {
+            return { minRow: 0, maxRow: 0, minCol: 0, maxCol: 0, hasData: false }
+        }
+        return { minRow: minR, maxRow: maxR, minCol: minC, maxCol: maxC, hasData: true }
+    }
+
+    function isTotalsRow(r, minCol, maxCol) {
+        // AI_CONTRACT §3.1 / CHALLENGE 2:
+        // "the last used row when its first non-empty cell matches /^(grand\s+)?(total|totals|subtotal|sum)\b/i"
+        for (let c = minCol; c <= maxCol; c++) {
+            const raw = getCellRaw(r, c).raw
+            if (raw && raw.trim() !== '') {
+                return /^(grand\s+)?(total|totals|subtotal|sum)\b/i.test(raw.trim())
+            }
+        }
+        return false
+    }
+
+    // ── Sorting Implementation ──
+
+    function getDataBlock(selection = null) {
+        const used = getUsedRange()
+        if (!used.hasData) return null
+
+        let startRow, endRow, minCol, maxCol, isTotalsPinned = false
+
+        if (selection && selection.r1 !== undefined && selection.r2 !== undefined) {
+            startRow = Math.min(selection.r1, selection.r2)
+            endRow = Math.max(selection.r1, selection.r2)
+            minCol = Math.min(selection.c1, selection.c2)
+            maxCol = Math.max(selection.c1, selection.c2)
+            // Selection sort: if user selected multiple rows, row 1 of selection can be data if specified,
+            // but standard behavior on sheet data block:
+            // "the selection if there is one, otherwise the used range with row 1 as header and a trailing totals row pinned at the bottom"
+        } else {
+            // Header is row 0 (row 1 in 1-based index)
+            startRow = 1 // 0-based row 1 (the 2nd row) is start of data
+            endRow = used.maxRow
+            minCol = 0
+            maxCol = Math.max(used.maxCol, cols - 1)
+
+            if (endRow >= startRow && isTotalsRow(endRow, 0, used.maxCol)) {
+                isTotalsPinned = true
+                endRow = endRow - 1
+            }
+        }
+
+        return { startRow, endRow, minCol, maxCol, isTotalsPinned }
+    }
+
+    /**
+     * Sorts the data block by a column index.
+     * @param {number} colIndex 
+     * @param {'asc'|'desc'|'original'} direction 
+     * @param {Object} options { visibleRows: Set<number>|null, selection: Object|null }
+     */
+    function sort(colIndex, direction = 'asc', options = {}) {
+        const block = getDataBlock(options.selection)
+        if (!block || block.endRow < block.startRow) {
+            return { reorderedCount: 0, block }
+        }
+
+        const { startRow, endRow, minCol, maxCol } = block
+        ensureRowIdsUpTo(Math.max(endRow + (block.isTotalsPinned ? 1 : 0), rows - 1))
+
+        // Determine which rows are subject to sort
+        const candidateRows = []
+        for (let r = startRow; r <= endRow; r++) {
+            if (!options.visibleRows || options.visibleRows.has(r)) {
+                candidateRows.push(r)
+            }
+        }
+
+        if (candidateRows.length <= 1) {
+            return { reorderedCount: 0, block }
+        }
+
+        // Snapshot current state for single-step undo
+        const cellSnapshot = takeSnapshot()
+        const rowIdSnapshot = new Map(rowIdentities)
+
+        // Read values for candidate rows
+        const rowEntries = candidateRows.map(r => {
+            const cell = getCellForDisplay(r, colIndex)
+            const val = (cell.computed !== null && cell.computed !== '') ? cell.computed : cell.raw
+            const originalId = getRowId(r)
+            return { r, val, originalId }
+        })
+
+        if (direction === 'original') {
+            // Sort stable by originalId ascending
+            rowEntries.sort((a, b) => a.originalId - b.originalId)
+        } else {
+            const dirMultiplier = direction === 'desc' ? -1 : 1
+            // Stable sort
+            rowEntries.sort((a, b) => {
+                const cmp = compareValues(a.val, b.val)
+                if (cmp !== 0) return cmp * dirMultiplier
+                return 0 // JS sort is stable in ES2019+
+            })
+        }
+
+        // Check if order actually changed
+        let hasChanged = false
+        for (let i = 0; i < candidateRows.length; i++) {
+            if (rowEntries[i].r !== candidateRows[i]) {
+                hasChanged = true
+                break
+            }
+        }
+        if (!hasChanged) {
+            return { reorderedCount: 0, block }
+        }
+
+        // Build mapping: old row -> new row
+        const rowMapping = new Map() // oldRow -> newRow
+        const newRowOrder = [] // list of old row indices in their new positions
+
+        for (let i = 0; i < candidateRows.length; i++) {
+            const oldRow = rowEntries[i].r
+            const newRow = candidateRows[i]
+            rowMapping.set(oldRow, newRow)
+            newRowOrder.push(oldRow)
+        }
+
+        // Perform physical row swap: extract row cells, rewrite formulas, place in new rows
+        // Note: columns outside minCol..maxCol? A row reorder reorders entire row cells!
+        // Requirement: "Formulas follow rows. References to moved rows point to where those rows went.
+        // A range spanning the whole block (=SUM(J2:J32)) is unchanged. Styles move with their rows."
+        
+        // Extract all cells for candidate rows across all columns
+        const extractedRows = new Map()
+        for (const oldRow of candidateRows) {
+            const rowData = new Map()
+            for (let c = 0; c < cols; c++) {
+                const rawVal = getCellRaw(oldRow, c).raw
+                if (rawVal !== '') {
+                    rowData.set(c, rawVal)
+                }
+            }
+            extractedRows.set(oldRow, rowData)
+        }
+
+        // Clear affected cells in grid
+        for (const r of candidateRows) {
+            for (let c = 0; c < cols; c++) {
+                const key = cellKey(r, c)
+                cells.delete(key)
+                graph.removeAllDependencies(key)
+                computedCache.delete(key)
+            }
+        }
+
+        // Place rows in new positions with rewritten formulas
+        for (let i = 0; i < candidateRows.length; i++) {
+            const newRow = candidateRows[i]
+            const oldRow = newRowOrder[i]
+            const rowData = extractedRows.get(oldRow)
+            
+            // Assign stable row id
+            const oldId = rowIdSnapshot.get(oldRow)
+            rowIdentities.set(newRow, oldId)
+
+            for (const [c, rawVal] of rowData.entries()) {
+                const rewrittenRaw = rewriteFormulaForSort(rawVal, rowMapping, startRow, endRow)
+                const key = cellKey(newRow, c)
+                cells.set(key, { raw: rewrittenRaw, computed: null, error: null })
+                if (rewrittenRaw.startsWith('=')) {
+                    updateDependencies(key, rewrittenRaw)
+                }
+            }
+        }
+
+        // Also, rewrite any formulas in un-moved rows (e.g. totals row or other rows) that referenced moved rows!
+        for (const [key, cell] of cells.entries()) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            // If cell is outside candidate rows and has formula
+            if (!candidateRows.includes(coords.row) && cell.raw && cell.raw.startsWith('=')) {
+                const rewritten = rewriteFormulaForSort(cell.raw, rowMapping, startRow, endRow)
+                if (rewritten !== cell.raw) {
+                    graph.removeAllDependencies(key)
+                    cells.set(key, { raw: rewritten, computed: null, error: null })
+                    updateDependencies(key, rewritten)
+                }
+            }
+        }
+
+        _generation++
+        markAllCellsDirty()
+        recalculate()
+
+        // Push undo entry
+        pushToUndoStack({
+            type: 'sort',
+            cellSnapshot,
+            rowIdSnapshot,
+            rowMapping // To allow UI (styles/selection) to undo
+        })
+
+        return {
+            reorderedCount: candidateRows.length,
+            rowMapping,
+            block
+        }
+    }
+
+    // ── Structural Insert/Delete ──
 
     function performInsertRow(atIndex) {
         const snapshot = takeSnapshot()
@@ -677,6 +1042,20 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         computedCache.clear()
         dirtyCells.clear()
         _generation++
+
+        // Shift rowIdentities
+        const newIdentities = new Map()
+        for (const [r, id] of rowIdentities.entries()) {
+            if (r >= atIndex) {
+                newIdentities.set(r + 1, id)
+            } else {
+                newIdentities.set(r, id)
+            }
+        }
+        rowIdentities.clear()
+        for (const [r, id] of newIdentities.entries()) {
+            rowIdentities.set(r, id)
+        }
 
         for (const [key, value] of snapshot.entries()) {
             const coords = cellCoords(key)
@@ -702,6 +1081,21 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         computedCache.clear()
         dirtyCells.clear()
         _generation++
+
+        // Shift rowIdentities
+        const newIdentities = new Map()
+        for (const [r, id] of rowIdentities.entries()) {
+            if (r === atIndex) continue
+            if (r > atIndex) {
+                newIdentities.set(r - 1, id)
+            } else {
+                newIdentities.set(r, id)
+            }
+        }
+        rowIdentities.clear()
+        for (const [r, id] of newIdentities.entries()) {
+            rowIdentities.set(r, id)
+        }
 
         for (const [key, value] of snapshot.entries()) {
             const coords = cellCoords(key)
@@ -782,8 +1176,6 @@ export function createEngine(initialRows = 50, initialCols = 50) {
 
     function executeSetCell(row, col, value) {
         const previousValue = getCellRaw(row, col).raw
-        // Only create undo entry if value actually changed
-        // This prevents undo stack pollution with no-op edits
         if (previousValue !== value) {
             pushToUndoStack({ type: 'set', r: row, c: col, oldVal: previousValue, newVal: value })
         }
@@ -795,7 +1187,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function executeInsertRow(atIndex) {
         const snapshot = takeSnapshot()
         const previousRows = rows
-        pushToUndoStack({ type: 'rowins', snap: snapshot, oldRows: previousRows })
+        pushToUndoStack({ type: 'rowins', snap: snapshot, oldRows: previousRows, rowIdSnap: new Map(rowIdentities) })
         performInsertRow(atIndex)
         recalculate()
     }
@@ -803,7 +1195,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function executeDeleteRow(atIndex) {
         const snapshot = takeSnapshot()
         const previousRows = rows
-        pushToUndoStack({ type: 'rowdel', snap: snapshot, oldRows: previousRows })
+        pushToUndoStack({ type: 'rowdel', snap: snapshot, oldRows: previousRows, rowIdSnap: new Map(rowIdentities) })
         performDeleteRow(atIndex)
         recalculate()
     }
@@ -825,38 +1217,57 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     }
 
     function undo() {
-        if (undoStack.length === 0) return false
+        if (undoStack.length === 0) return null
         const entry = undoStack.pop()
 
         if (entry.type === 'set') {
-            // For cell edits, swap current value to redo stack and restore old value
             const currentValue = getCellRaw(entry.r, entry.c).raw
             redoStack.push({ ...entry, newVal: currentValue })
             setCellRaw(entry.r, entry.c, entry.oldVal)
             _generation++
             recalculate()
+            return { type: 'set', r: entry.r, c: entry.c }
+        } else if (entry.type === 'sort') {
+            // Restore sort
+            const currentCellSnap = takeSnapshot()
+            const currentRowIdSnap = new Map(rowIdentities)
+            redoStack.push({
+                type: 'sort',
+                cellSnapshot: currentCellSnap,
+                rowIdSnapshot: currentRowIdSnap,
+                rowMapping: entry.rowMapping
+            })
+            restoreSnapshot(entry.cellSnapshot)
+            rowIdentities.clear()
+            for (const [r, id] of entry.rowIdSnapshot.entries()) {
+                rowIdentities.set(r, id)
+            }
+            recalculate()
+            return { type: 'sort', rowMapping: entry.rowMapping, undo: true }
         } else {
-            // For structural changes (row/col insert/delete), save current state to redo
-            // and restore the snapshot from undo entry
-            // Note: The snapshot contains the cell data, but rows/cols must be restored separately
             redoStack.push({
                 ...entry,
                 restoreSnap: takeSnapshot(),
                 restoreRows: rows,
-                restoreCols: cols
+                restoreCols: cols,
+                restoreRowIdSnap: new Map(rowIdentities)
             })
             restoreSnapshot(entry.snap)
-            // Restore grid dimensions - this must happen after restoreSnapshot
-            // because restoreSnapshot increments _generation but doesn't modify rows/cols
+            if (entry.rowIdSnap) {
+                rowIdentities.clear()
+                for (const [r, id] of entry.rowIdSnap.entries()) {
+                    rowIdentities.set(r, id)
+                }
+            }
             if (entry.type === 'rowins' || entry.type === 'rowdel') rows = entry.oldRows
             else if (entry.type === 'colins' || entry.type === 'coldel') cols = entry.oldCols
             recalculate()
+            return { type: entry.type }
         }
-        return true
     }
 
     function redo() {
-        if (redoStack.length === 0) return false
+        if (redoStack.length === 0) return null
         const entry = redoStack.pop()
 
         if (entry.type === 'set') {
@@ -865,43 +1276,57 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             setCellRaw(entry.r, entry.c, entry.newVal)
             _generation++
             recalculate()
+            return { type: 'set', r: entry.r, c: entry.c }
+        } else if (entry.type === 'sort') {
+            const currentCellSnap = takeSnapshot()
+            const currentRowIdSnap = new Map(rowIdentities)
+            undoStack.push({
+                type: 'sort',
+                cellSnapshot: currentCellSnap,
+                rowIdSnapshot: currentRowIdSnap,
+                rowMapping: entry.rowMapping
+            })
+            restoreSnapshot(entry.cellSnapshot)
+            rowIdentities.clear()
+            for (const [r, id] of entry.rowIdSnapshot.entries()) {
+                rowIdentities.set(r, id)
+            }
+            recalculate()
+            return { type: 'sort', rowMapping: entry.rowMapping, redo: true }
         } else {
             undoStack.push({
                 ...entry,
                 snap: takeSnapshot(),
                 oldRows: rows,
-                oldCols: cols
+                oldCols: cols,
+                rowIdSnap: new Map(rowIdentities)
             })
             restoreSnapshot(entry.restoreSnap)
+            if (entry.restoreRowIdSnap) {
+                rowIdentities.clear()
+                for (const [r, id] of entry.restoreRowIdSnap.entries()) {
+                    rowIdentities.set(r, id)
+                }
+            }
             rows = entry.restoreRows
             cols = entry.restoreCols
             recalculate()
+            return { type: entry.type }
         }
-        return true
     }
 
-    // ── Public cell display (returns raw + computed + error) ──
+    // ── Public cell display ──
 
     function getCellForDisplay(row, col) {
         const cell = getCellRaw(row, col)
         const key = cellKey(row, col)
-        // Resolve the computed value (this may trigger recalculation if the cell is dirty)
-        // The resolveCellValue function handles caching and dependency resolution
         const value = resolveCellValue(key)
 
-        // Error values are strings starting with '#' (e.g., '#CYCLE!', '#VALUE!')
         if (typeof value === 'string' && value.startsWith('#')) {
             return { raw: cell.raw, computed: null, error: value }
         }
-        // Return the computed value (which may be a number or string)
-        // Note: Empty cells return '' as computed value, not null
         return { raw: cell.raw, computed: value, error: null }
     }
-
-    // ── Public API ──
-    // The engine exposes a limited API to prevent direct access to internal state
-    // All cell operations go through the public methods which handle undo/redo,
-    // dependency tracking, and cache invalidation automatically
 
     return {
         get rows() { return rows },
@@ -916,13 +1341,18 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         redo,
         canUndo: () => undoStack.length > 0,
         canRedo: () => redoStack.length > 0,
-        // Grow the grid so that at least minRows x minCols exist. The engine is
-        // sparse, so this only moves the bounds; nothing is allocated.
         ensureCapacity: (minRows, minCols) => {
             if (minRows > rows) rows = minRows
             if (minCols > cols) cols = minCols
         },
-        // Internal state is not exposed - if you need to serialize/deserialize,
-        // you'll need to work with the public API or add new methods
+        // Sort & Filter API additions
+        sort,
+        getDataBlock,
+        getUsedRange,
+        getRowId,
+        isTotalsRow: (r) => {
+            const used = getUsedRange()
+            return isTotalsRow(r, 0, used.maxCol)
+        }
     }
 }
