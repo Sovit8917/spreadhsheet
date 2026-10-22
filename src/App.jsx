@@ -15,14 +15,24 @@ export default function App() {
   const [selectedCell, setSelectedCell] = useState({ r: 0, c: 0 })
   const [editingCell, setEditingCell] = useState(null)
   const [editValue, setEditValue] = useState('')
-  const [cellStyles, setCellStyles] = useState({})
+  const [cellStyles, setCellStyles] = useState(() => engine.getAllCellStyles())
   // Name Box input state: null means it automatically mirrors selectedCell
   const [nameBoxOverride, setNameBoxOverride] = useState(null)
   const [isAskDataOpen, setIsAskDataOpen] = useState(false)
 
   const scrollContainerRef = useRef(null)
 
-  const forceRerender = useCallback(() => setVersion(v => v + 1), [])
+  const forceRerender = useCallback(() => {
+    setCellStyles(engine.getAllCellStyles())
+    setVersion(v => v + 1)
+  }, [engine])
+
+  useEffect(() => {
+    return engine.subscribeStyles(() => {
+      setCellStyles(engine.getAllCellStyles())
+      setVersion(v => v + 1)
+    })
+  }, [engine])
 
   // ────── Cell coordinate utilities ──────
 
@@ -60,20 +70,12 @@ export default function App() {
   // ────── Cell style helpers ──────
 
   const getCellStyle = useCallback((row, col) => {
-    const key = `${row},${col}`
-    return cellStyles[key] || {
-      bold: false, italic: false, underline: false,
-      bg: 'white', color: '#202124', align: 'left', fontSize: 13
-    }
-  }, [cellStyles])
+    return engine.getCellStyle(row, col)
+  }, [engine])
 
   const updateCellStyle = useCallback((row, col, updates) => {
-    const key = `${row},${col}`
-    setCellStyles(prev => ({
-      ...prev,
-      [key]: { ...getCellStyle(row, col), ...updates }
-    }))
-  }, [getCellStyle])
+    engine.setCellStyle(row, col, updates)
+  }, [engine])
 
   // ────── Cell editing ──────
 

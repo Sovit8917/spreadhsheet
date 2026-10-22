@@ -291,3 +291,52 @@
   color: #80868b;
   text-align: right;
 }
+
+.format-card {
+  border-left: 4px solid #1a73e8;
+  background: #fdfdfd;
+}
+
+.format-preview-header {
+  font-size: 13px;
+  color: #1a73e8;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.format-apply-btn {
+  background: #1a73e8 !important;
+  color: #ffffff !important;
+  border-color: #1a73e8 !important;
+  font-weight: 600;
+}
+.format-apply-btn:hover {
+  background: #1557b0 !important;
+}
+
+.format-discard-btn {
+  background: #f8f9fa !important;
+  color: #5f6368 !important;
+  border-color: #dadce0 !important;
+}
+.format-discard-btn:hover {
+  background: #f1f3f4 !important;
+  color: #202124 !important;
+}
+
+.format-result-badge {
+  font-size: 12px;
+  color: #137333;
+  background: #e6f4ea;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.format-discarded-badge {
+  font-size: 12px;
+  color: #5f6368;
+  font-style: italic;
+  padding: 4px 0;
+}

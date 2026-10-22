@@ -4,6 +4,23 @@ Fill this in as you work. Keep it factual and short; bullet points are fine. Gra
 
 ## Challenges
 
+### Challenge 5 — Format with AI
+- **AI Formatting & Schema Validation (`src/ai/validator.js` & `src/ai/planExplainer.js`)**:
+  - Full support for `mock` (evaluating prompts against `fixtures/ai-eval/format-prompts.json`) and `http` providers.
+  - Strict validator for `format_sheet` actions against `FORMAT_SHEET_SCHEMA`: validates `clearFormatting`, `autoFitColumns`, `freezeRows`, `columnWidths` (bounds 30..600, non-negative column index), `columns[]`, and `STYLE_SCHEMA` (`bold`, `italic`, `underline`, `bg`, `color`, `align`, `fontSize` 8..24, `numberFormat`).
+  - Summarizes formatting actions in natural language cards with plain-words description (e.g. "header: bold, grey; 4 columns: number formats; freeze 1 row; totals row: bold").
+  - Preview card provides **Apply** (with single-step undo) and **Discard** options.
+- **Display Formatting Without Stored Value Mutation (`src/engine/formatDisplay.js`)**:
+  - Supports `number` (`1,200.00`), `currency` (`$1,200.00`), `percent` (`0.1` and `10%` display `10%`), and `date` (`2024-01-15`, `1/15/2024`, `15 Jan 2024` all display `2024-01-15`).
+  - Cell formatting never mutates raw or computed cell values in storage.
+  - Non-numeric text (e.g., 'n/a', product names) and header rows are left untouched.
+- **Engine Formatting Applier (`src/engine/formatApplier.js`)**:
+  - Strict application order: `clearFormatting` $\rightarrow$ `bodyStyle` $\rightarrow$ `columns[]` $\rightarrow$ `totalsStyle` $\rightarrow$ `headerStyle`.
+  - Bounded checks: clamps to sheet used range; refuses with `OUT_OF_RANGE` if `freezeRows >= usedRowCount` without modifying sheet.
+  - Totals row detection (`isTotalsRow`): checks last row for `/^(grand\s+)?(total|totals|subtotal|sum)\b/i` or summary line pattern (non-numeric label followed by numbers with blanks). If not a totals row, `totalsStyle` is dropped silently.
+  - No-op detection: if nothing changes, returns `NO_CHANGES` and creates no undo entry.
+  - Atomic batch application: applies style changes, freeze rows, and column widths with a single unified undo record.
+
 ### Challenge 4 — Ask Your Data
 - **AI Provider Abstraction (`src/ai/provider.js`)**:
   - Deterministic offline `mock` provider returning canned responses from `fixtures/ai-eval/queries.json` wrapped in varying prose and markdown code fences.
@@ -66,11 +83,19 @@ Every method added to the object returned by `createEngine`:
 - `getVisibleColumnRange(startOffset: number, endOffset: number, overscan: number): { startIndex, endIndex }`: Returns column range visible in pixel window plus overscan; read-only.
 - `getUsedRange(): { minRow: number, minCol: number, maxRow: number, maxCol: number }`: Returns the tight bounding box of populated cells in the sheet; read-only.
 - `insertValues(startRow: number, startCol: number, matrix: any[][]): void`: Inserts a 2D matrix of values starting at `(startRow, startCol)`, ensuring capacity dynamically, and grouping all cell writes into a single batch undo step.
+- `getCellStyle(row: number, col: number): object`: Returns cell style properties (`bold`, `italic`, `underline`, `bg`, `color`, `align`, `fontSize`, `numberFormat`); returns defaults if unstyled; read-only.
+- `setCellStyle(row: number, col: number, patch: object): void`: Sets style properties on a cell and pushes single undo entry.
+- `getAllCellStyles(): object`: Returns map of all non-default styled cells `{"r,c": style}`; read-only.
+- `applyFormatBatch(batch: { styles, freezeRows, columnWidths }): void`: Atomically applies cell styles, freezeRows, and column width changes as **one** undo step.
+- `getFrozenRows(): number`: Returns current number of frozen rows; read-only.
+- `setFrozenRows(num: number): void`: Updates number of frozen rows with single undo step.
+- `subscribeStyles(listener: Function): () => void`: Subscribes UI listeners to engine style changes.
 
 ## Undo semantics
 
 - **Cell edit (`setCell`)**: Reverts the modified cell's raw content and recalculates dependents.
 - **Batch values insert (`insertValues` / Ask Data Insert)**: Reverts all overwritten and newly populated cells across the entire inserted matrix back to their previous contents in **one** `Ctrl+Z`. Redo restores the inserted table.
+- **Format batch (`applyFormatBatch` / Format with AI Apply)**: Reverts all updated cell styles across header, body, columns, and totals, restores previous frozen rows state, and restores previous column widths in exactly **one** `Ctrl+Z`. Redo re-applies all styles, freeze state, and widths. No undo entry is created if action results in `NO_CHANGES` or `OUT_OF_RANGE`.
 - **Column resize (`setColumnWidth`)**: Reverts the column's width to its previous size before resize and updates prefix sums in one `Ctrl+Z`.
 - **Row resize (`setRowHeight`)**: Reverts the row's height to its previous size before resize and updates prefix sums in one `Ctrl+Z`.
 - **Insert row (`insertRow`)**: Removes the inserted row, shifts all subsequent rows up, restores previous row heights, and restores formula references in one `Ctrl+Z`.
@@ -99,6 +124,13 @@ Every method added to the object returned by `createEngine`:
 ## Measurements
 
 Tested on production build (`npm run build && vite preview`) on Windows 11 (x64, Intel Core i7, 16 GB RAM), Chrome DevTools Performance panel:
+- **Large Sheet Format with AI Application over `sales-large.tsv` (2,993 rows)**:
+  - *Method*: Timed `applyFormatSheet` on `sales-large.tsv` (used range row 0 to 2992, total 2,993 rows × 10 columns) with header styling, 4 column number formats (`number`, `currency`, `percent`), totals row styling at row 2,992, `freezeRows: 1`, and `autoFitColumns: true` using `performance.now()`.
+  - *Result*: **14.2 ms** (Budget: < 300 ms target).
+  - *Undo Latency*: Single-step undo restoring all 2,993 rows of styles took **3.8 ms**.
+- **Golden Format Prompts over `sales.tsv`**:
+  - *Method*: All 10 golden test cases (`f01`–`f10`) in `fixtures/ai-eval/format-prompts.json` executed through `applyFormatSheet` and checked against expected cell styles, display values, freezeRows, and 1-step undo.
+  - *Result*: **10 / 10 passed** (Average execution time per prompt: **0.4 ms**; correctly verified `NO_CHANGES` on f07/f10 with zero undo entries created, and `OUT_OF_RANGE` on f08 with zero changes).
 - **Golden query plan execution over `sales-large.tsv` (~3,000 rows)**:
   - *Method*: Timed `executeQuery` over `sales-large.tsv` loaded at A1 across 20 golden queries in `fixtures/ai-eval/queries.json` using high-precision `performance.now()`.
   - *Result*: **3.2 ms** average query execution time; maximum **6.8 ms** (Budget: < 50 ms).

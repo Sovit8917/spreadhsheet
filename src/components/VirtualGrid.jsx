@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import './VirtualGrid.css'
+import { formatValueForDisplay } from '../engine/formatDisplay.js'
 
 export default function VirtualGrid({
   engine,
@@ -263,7 +264,9 @@ export default function VirtualGrid({
         const isEdit = editingCell?.r === 0 && editingCell?.c === 0
         const cellData = engine.getCell(0, 0)
         const style = cellStyles['0,0'] || {}
-        const val = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+        const rawVal = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+        // Row 0 is the header: headers are never number-formatted
+        const val = rawVal
 
         return (
           <div
@@ -343,6 +346,7 @@ export default function VirtualGrid({
           const colW = engine.getColumnWidth(c)
           const cellData = engine.getCell(0, c)
           const style = cellStyles[`0,${c}`] || {}
+          // Row 0 is header: headers are never number-formatted
           const val = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
 
           cells.push(
@@ -423,7 +427,8 @@ export default function VirtualGrid({
           const rowH = engine.getRowHeight(r)
           const cellData = engine.getCell(r, 0)
           const style = cellStyles[`${r},0`] || {}
-          const val = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+          const rawVal = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+          const val = cellData.error ? rawVal : formatValueForDisplay(rawVal, style.numberFormat)
 
           cells.push(
             <div
@@ -480,7 +485,8 @@ export default function VirtualGrid({
             const colW = engine.getColumnWidth(c)
             const cellData = engine.getCell(r, c)
             const style = cellStyles[`${r},${c}`] || {}
-            const val = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+            const rawVal = cellData.error || (cellData.computed !== null && cellData.computed !== '' ? String(cellData.computed) : cellData.raw)
+            const val = cellData.error ? rawVal : formatValueForDisplay(rawVal, style.numberFormat)
 
             cells.push(
               <div

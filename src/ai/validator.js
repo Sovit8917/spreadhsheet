@@ -1,4 +1,4 @@
-import { ACTION_TYPES, FILTER_OPS, AGGREGATE_FNS } from './contract.js'
+import { ACTION_TYPES, FILTER_OPS, AGGREGATE_FNS, NUMBER_FORMATS } from './contract.js'
 
 /**
  * Extracts JSON text from raw model output that may include prose and code fences.
@@ -132,8 +132,16 @@ export function parseAndValidateAction(rawText) {
         return { ok: true, action: parsed }
     }
 
-    // Format sheet type (Challenge 5 or future)
+    // Format sheet type
     if (parsed.type === ACTION_TYPES.FORMAT_SHEET) {
+        const valRes = validateFormatSheetPlan(parsed)
+        if (!valRes.ok) {
+            return {
+                ok: false,
+                error: 'INVALID_RESPONSE',
+                detail: valRes.detail
+            }
+        }
         return { ok: true, action: parsed }
     }
 
@@ -267,3 +275,153 @@ function validateQueryPlan(plan) {
 
     return { ok: true }
 }
+
+/**
+ * Validates a style object against STYLE_SCHEMA.
+ * @param {any} style
+ * @param {string} path Context path for error message
+ * @returns {{ ok: boolean, detail?: string }}
+ */
+function validateStyle(style, path = 'style') {
+    if (!style || typeof style !== 'object' || Array.isArray(style)) {
+        return { ok: false, detail: `${path} must be an object` }
+    }
+
+    const allowedProps = new Set(['bold', 'italic', 'underline', 'bg', 'color', 'align', 'fontSize', 'numberFormat'])
+    for (const key of Object.keys(style)) {
+        if (!allowedProps.has(key)) {
+            return { ok: false, detail: `Unexpected property "${key}" in ${path}` }
+        }
+    }
+
+    if (style.bold !== undefined && typeof style.bold !== 'boolean') {
+        return { ok: false, detail: `${path}.bold must be a boolean` }
+    }
+    if (style.italic !== undefined && typeof style.italic !== 'boolean') {
+        return { ok: false, detail: `${path}.italic must be a boolean` }
+    }
+    if (style.underline !== undefined && typeof style.underline !== 'boolean') {
+        return { ok: false, detail: `${path}.underline must be a boolean` }
+    }
+    if (style.bg !== undefined) {
+        if (typeof style.bg !== 'string' || (!/^#[0-9a-fA-F]{6}$/.test(style.bg) && style.bg !== 'white')) {
+            return { ok: false, detail: `${path}.bg must be a 6-digit hex color (#ffffff) or "white"` }
+        }
+    }
+    if (style.color !== undefined) {
+        if (typeof style.color !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(style.color)) {
+            return { ok: false, detail: `${path}.color must be a 6-digit hex color (#000000)` }
+        }
+    }
+    if (style.align !== undefined) {
+        if (!['left', 'center', 'right'].includes(style.align)) {
+            return { ok: false, detail: `${path}.align must be "left", "center", or "right"` }
+        }
+    }
+    if (style.fontSize !== undefined) {
+        if (!Number.isInteger(style.fontSize) || style.fontSize < 8 || style.fontSize > 24) {
+            return { ok: false, detail: `${path}.fontSize must be an integer between 8 and 24` }
+        }
+    }
+    if (style.numberFormat !== undefined) {
+        if (!NUMBER_FORMATS.includes(style.numberFormat)) {
+            return { ok: false, detail: `${path}.numberFormat must be one of: ${NUMBER_FORMATS.join(', ')}` }
+        }
+    }
+
+    return { ok: true }
+}
+
+/**
+ * Validates a format_sheet action against FORMAT_SHEET_SCHEMA.
+ * @param {any} plan
+ * @returns {{ ok: boolean, detail?: string }}
+ */
+function validateFormatSheetPlan(plan) {
+    const allowedRootProps = new Set([
+        'type', 'clearFormatting', 'headerStyle', 'bodyStyle', 'totalsStyle',
+        'columns', 'freezeRows', 'columnWidths', 'autoFitColumns'
+    ])
+    for (const key of Object.keys(plan)) {
+        if (!allowedRootProps.has(key)) {
+            return { ok: false, detail: `Unexpected property "${key}" in format_sheet action` }
+        }
+    }
+
+    if (plan.clearFormatting !== undefined && typeof plan.clearFormatting !== 'boolean') {
+        return { ok: false, detail: 'clearFormatting must be a boolean' }
+    }
+    if (plan.autoFitColumns !== undefined && typeof plan.autoFitColumns !== 'boolean') {
+        return { ok: false, detail: 'autoFitColumns must be a boolean' }
+    }
+
+    if (plan.headerStyle !== undefined) {
+        const val = validateStyle(plan.headerStyle, 'headerStyle')
+        if (!val.ok) return val
+    }
+    if (plan.bodyStyle !== undefined) {
+        const val = validateStyle(plan.bodyStyle, 'bodyStyle')
+        if (!val.ok) return val
+    }
+    if (plan.totalsStyle !== undefined) {
+        const val = validateStyle(plan.totalsStyle, 'totalsStyle')
+        if (!val.ok) return val
+    }
+
+    if (plan.columns !== undefined) {
+        if (!Array.isArray(plan.columns)) {
+            return { ok: false, detail: 'columns must be an array' }
+        }
+        for (let i = 0; i < plan.columns.length; i++) {
+            const colEntry = plan.columns[i]
+            if (!colEntry || typeof colEntry !== 'object' || Array.isArray(colEntry)) {
+                return { ok: false, detail: `columns[${i}] must be an object` }
+            }
+            if (colEntry.col === undefined || !Number.isInteger(colEntry.col) || colEntry.col < 0) {
+                return { ok: false, detail: `columns[${i}].col must be a non-negative integer` }
+            }
+            if (!colEntry.style) {
+                return { ok: false, detail: `columns[${i}] missing "style"` }
+            }
+            const val = validateStyle(colEntry.style, `columns[${i}].style`)
+            if (!val.ok) return val
+            for (const key of Object.keys(colEntry)) {
+                if (key !== 'col' && key !== 'style') {
+                    return { ok: false, detail: `Unexpected property "${key}" in columns[${i}]` }
+                }
+            }
+        }
+    }
+
+    if (plan.freezeRows !== undefined && plan.freezeRows !== null) {
+        if (!Number.isInteger(plan.freezeRows) || plan.freezeRows < 0) {
+            return { ok: false, detail: 'freezeRows must be a non-negative integer or null' }
+        }
+    }
+
+    if (plan.columnWidths !== undefined) {
+        if (!Array.isArray(plan.columnWidths)) {
+            return { ok: false, detail: 'columnWidths must be an array' }
+        }
+        for (let i = 0; i < plan.columnWidths.length; i++) {
+            const cw = plan.columnWidths[i]
+            if (!cw || typeof cw !== 'object' || Array.isArray(cw)) {
+                return { ok: false, detail: `columnWidths[${i}] must be an object` }
+            }
+            if (cw.col === undefined || !Number.isInteger(cw.col) || cw.col < 0) {
+                return { ok: false, detail: `columnWidths[${i}].col must be a non-negative integer` }
+            }
+            if (cw.width === undefined || !Number.isInteger(cw.width) || cw.width < 30 || cw.width > 600) {
+                return { ok: false, detail: `columnWidths[${i}].width must be an integer between 30 and 600` }
+            }
+            for (const key of Object.keys(cw)) {
+                if (key !== 'col' && key !== 'width') {
+                    return { ok: false, detail: `Unexpected property "${key}" in columnWidths[${i}]` }
+                }
+            }
+        }
+    }
+
+    return { ok: true }
+}
+

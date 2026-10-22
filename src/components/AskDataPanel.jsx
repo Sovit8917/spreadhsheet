@@ -4,7 +4,8 @@ import { createProvider } from '../ai/provider.js'
 import { buildSheetContext } from '../ai/contextBuilder.js'
 import { parseAndValidateAction } from '../ai/validator.js'
 import { executeQuery } from '../engine/queryExecutor.js'
-import { summarizePlan } from '../ai/planExplainer.js'
+import { summarizePlan, summarizeFormatPlan } from '../ai/planExplainer.js'
+import { applyFormatSheet } from '../engine/formatApplier.js'
 
 export default function AskDataPanel({
     isOpen,
@@ -50,11 +51,11 @@ export default function AskDataPanel({
         const selStr = selectedCell ? `R${selectedCell.r + 1}C${selectedCell.c + 1}` : 'A1'
         const context = buildSheetContext(engine, selStr)
 
-        const systemPrompt = `You are an AI spreadsheet assistant for "Ask your data".
-Analyze the user's natural language question about the spreadsheet data and return a single JSON action object following the contract in AI_CONTRACT.md.
+        const systemPrompt = `You are an AI spreadsheet assistant for "Ask your data" and "Format with AI".
+Analyze the user's natural language request about the spreadsheet data and return a single JSON action object following the contract in AI_CONTRACT.md.
 Rules:
 1. Return ONLY a single JSON object. No explanation, no conversational filler, no code fences.
-2. The JSON action must have "type": "query" or "type": "clarify".
+2. The JSON action must have "type": "query" | "format_sheet" | "clarify".
 3. For "query", allowed fields are:
    - "type": "query"
    - "excludeTotalsRow": boolean (default true)
@@ -64,8 +65,18 @@ Rules:
    - "columns": array of string
    - "sort": array of { "column": string, "dir": "asc"|"desc" }
    - "limit": integer (clamped to 500)
-4. Use verbatim column names from the sheet context.
-5. If the request cannot be answered or is ambiguous, use "type": "clarify" with "question".`
+4. For "format_sheet", allowed fields are:
+   - "type": "format_sheet"
+   - "clearFormatting": boolean
+   - "headerStyle": { "bold"?: boolean, "italic"?: boolean, "underline"?: boolean, "bg"?: string, "color"?: string, "align"?: "left"|"center"|"right", "fontSize"?: integer, "numberFormat"?: "general"|"number"|"currency"|"percent"|"date" }
+   - "bodyStyle": style object
+   - "totalsStyle": style object
+   - "columns": array of { "col": integer, "style": style object }
+   - "freezeRows": integer | null
+   - "columnWidths": array of { "col": integer, "width": integer }
+   - "autoFitColumns": boolean
+5. Use verbatim column names from the sheet context.
+6. If the request cannot be answered or is ambiguous, use "type": "clarify" with "question".`
 
         const userTurn = `Sheet Context:
 ${JSON.stringify(context, null, 2)}
@@ -80,7 +91,11 @@ User Question: ${trimmed}`
             summary: '',
             result: null,
             clarify: null,
-            error: null
+            error: null,
+            formatPreview: null,
+            formatApplied: false,
+            formatDiscarded: false,
+            formatResultMsg: null
         }
 
         try {
@@ -110,8 +125,11 @@ User Question: ${trimmed}`
                     } else {
                         turnRecord.result = execResult
                     }
+                } else if (action.type === 'format_sheet') {
+                    turnRecord.summary = summarizeFormatPlan(action)
+                    turnRecord.formatPreview = action
                 } else {
-                    turnRecord.error = `Action ${action.type} is not permitted in Ask Data`
+                    turnRecord.error = `Action ${action.type} is not permitted`
                 }
             }
         } catch (err) {
@@ -157,6 +175,47 @@ User Question: ${trimmed}`
         forceRerender()
     }, [history, selectedCell, engine, forceRerender])
 
+    // Apply format action with one-step undo
+    const handleApplyFormat = useCallback((itemIndex) => {
+        const item = history[itemIndex]
+        if (!item || !item.formatPreview) return
+
+        const res = applyFormatSheet(engine, item.formatPreview)
+        setHistory(prev => {
+            const copy = [...prev]
+            if (!res.ok) {
+                copy[itemIndex] = {
+                    ...item,
+                    error: `${res.result}: ${res.message || 'Format action rejected'}`,
+                    formatApplied: false
+                }
+            } else if (res.result === 'NO_CHANGES') {
+                copy[itemIndex] = {
+                    ...item,
+                    formatResultMsg: 'NO_CHANGES: Action made no changes to the sheet.',
+                    formatApplied: true
+                }
+            } else {
+                copy[itemIndex] = {
+                    ...item,
+                    formatResultMsg: 'Formatting applied successfully (1 undo step).',
+                    formatApplied: true
+                }
+            }
+            return copy
+        })
+        forceRerender()
+    }, [history, engine, forceRerender])
+
+    // Discard format preview
+    const handleDiscardFormat = useCallback((itemIndex) => {
+        setHistory(prev => {
+            const copy = [...prev]
+            copy[itemIndex] = { ...copy[itemIndex], formatDiscarded: true }
+            return copy
+        })
+    }, [])
+
     if (!isOpen) return null
 
     return (
@@ -174,12 +233,20 @@ User Question: ${trimmed}`
                     <div className="ask-data-empty">
                         <h4>Ask questions in natural language</h4>
                         <p>The model translates your question into a deterministic query plan; the engine executes it over computed sheet values.</p>
-                        <p style={{ marginTop: '10px', fontWeight: '500' }}>Try sample prompts:</p>
+                        <p style={{ marginTop: '10px', fontWeight: '500' }}>Try sample query prompts:</p>
                         <ul>
                             <li onClick={() => handleRunQuery('What is the total sales by region?')}>"What is the total sales by region?"</li>
                             <li onClick={() => handleRunQuery('Top 3 sales reps by total sales')}>"Top 3 sales reps by total sales"</li>
                             <li onClick={() => handleRunQuery('Total units per category')}>"Total units per category"</li>
                             <li onClick={() => handleRunQuery('Show me orders with a total over 5000')}>"Show me orders with a total over 5000"</li>
+                        </ul>
+                        <p style={{ marginTop: '10px', fontWeight: '500' }}>Try format prompts (Format with AI):</p>
+                        <ul>
+                            <li onClick={() => handleRunQuery('Format this as a clean table')}>"Format this as a clean table"</li>
+                            <li onClick={() => handleRunQuery('Make the header row bold and blue')}>"Make the header row bold and blue"</li>
+                            <li onClick={() => handleRunQuery('Show unit prices and totals as currency with two decimals')}>"Show unit prices and totals as currency with two decimals"</li>
+                            <li onClick={() => handleRunQuery('Highlight the totals row in yellow')}>"Highlight the totals row in yellow"</li>
+                            <li onClick={() => handleRunQuery('Remove all formatting')}>"Remove all formatting"</li>
                         </ul>
                     </div>
                 )}
@@ -268,6 +335,64 @@ User Question: ${trimmed}`
                                 </div>
                             </div>
                         )}
+
+                        {item.formatPreview && (
+                            <div className="ask-data-result-card format-card">
+                                <div className="format-preview-header">
+                                    <strong>🎨 Formatting Preview</strong>
+                                </div>
+                                <div className="ask-data-plan-summary">
+                                    {item.summary}
+                                </div>
+
+                                <div className="ask-data-meta-row">
+                                    <span>Plan intent</span>
+                                    <button
+                                        className="ask-data-toggle-plan"
+                                        onClick={() => toggleShowPlan(idx)}
+                                    >
+                                        {showPlanMap[idx] ? 'Hide raw action' : 'Show action JSON'}
+                                    </button>
+                                </div>
+
+                                {showPlanMap[idx] && item.plan && (
+                                    <pre className="ask-data-raw-plan">
+                                        {JSON.stringify(item.plan, null, 2)}
+                                    </pre>
+                                )}
+
+                                {item.formatResultMsg && (
+                                    <div className="format-result-badge">
+                                        ℹ️ {item.formatResultMsg}
+                                    </div>
+                                )}
+
+                                {!item.formatApplied && !item.formatDiscarded && (
+                                    <div className="ask-data-actions-row">
+                                        <button
+                                            className="ask-data-action-btn format-apply-btn"
+                                            onClick={() => handleApplyFormat(idx)}
+                                            title="Apply formatting to sheet (1 undo step)"
+                                        >
+                                            ✅ Apply
+                                        </button>
+                                        <button
+                                            className="ask-data-action-btn format-discard-btn"
+                                            onClick={() => handleDiscardFormat(idx)}
+                                            title="Discard format preview"
+                                        >
+                                            ✕ Discard
+                                        </button>
+                                    </div>
+                                )}
+
+                                {item.formatDiscarded && (
+                                    <div className="format-discarded-badge">
+                                        Preview discarded.
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 ))}
 
@@ -291,7 +416,7 @@ User Question: ${trimmed}`
                     <input
                         ref={inputRef}
                         className="ask-data-input"
-                        placeholder="Ask a question about your data..."
+                        placeholder="Ask a question or format request (e.g. Format as a clean table)..."
                         value={prompt}
                         onChange={(e) => setPrompt(e.target.value)}
                         disabled={loading}
@@ -301,7 +426,7 @@ User Question: ${trimmed}`
                         className="ask-data-submit-btn"
                         disabled={loading || !prompt.trim()}
                     >
-                        Ask
+                        Send
                     </button>
                 </form>
                 <div className="ask-data-shortcut-hint">

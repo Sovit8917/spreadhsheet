@@ -501,6 +501,8 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     const colWidths = createDimensionManager(initialCols, 100, 30)
 
     const cells = new Map()
+    const cellStyles = new Map() // key "r,c" -> style object
+    let frozenRows = 1 // default frozen header row
     const graph = createDependencyGraph()
     const dirtyCells = new Set()
     const computedCache = new Map()
@@ -512,6 +514,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     let _generation = 0
     let _batchMode = false
     let _batchCallbacks = []
+    let _styleChangeListeners = new Set()
 
     // ── Internal helpers ──
 
@@ -663,30 +666,47 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     // ── Snapshot / Restore (for undo of structural changes) ──
 
     function takeSnapshot() {
-        // Create a deep copy of all cell data for undo/redo operations
-        // Note: This only captures cell data, not the dependency graph or cache
-        // The dependency graph is rebuilt from the cell formulas when restoring
+        // Create a deep copy of all cell data and styles for undo/redo operations
         const snapshot = new Map()
         for (const [key, value] of cells.entries()) {
-            // Create a shallow copy of the cell object
-            // The cell object contains: { raw: string, computed: number|null, error: string|null }
-            // Note: computed and error are not persisted in snapshots - they're recalculated on restore
             snapshot.set(key, { ...value })
         }
-        return snapshot
+        const styleSnapshot = new Map()
+        for (const [key, value] of cellStyles.entries()) {
+            styleSnapshot.set(key, { ...value })
+        }
+        return {
+            cells: snapshot,
+            styles: styleSnapshot,
+            frozenRows
+        }
     }
 
-    function restoreSnapshot(snapshot) {
+    function restoreSnapshot(snapObj) {
+        // Handle both older snapshots (Map) and new object snapshots ({ cells, styles, frozenRows })
+        const cellMap = (snapObj && snapObj.cells) ? snapObj.cells : snapObj
+        const styleMap = (snapObj && snapObj.styles) ? snapObj.styles : null
+
         cells.clear()
-        for (const [key, value] of snapshot.entries()) {
+        for (const [key, value] of cellMap.entries()) {
             cells.set(key, { ...value })
         }
+
+        cellStyles.clear()
+        if (styleMap) {
+            for (const [key, value] of styleMap.entries()) {
+                cellStyles.set(key, { ...value })
+            }
+        }
+        if (snapObj && typeof snapObj.frozenRows === 'number') {
+            frozenRows = snapObj.frozenRows
+        }
+
         graph.clear()
         computedCache.clear()
         dirtyCells.clear()
         _generation++
         // Rebuild dependency graph from restored cells
-        // Important: This must happen before marking cells dirty to ensure correct dependency tracking
         for (const [key, value] of cells.entries()) {
             if (value.raw && value.raw.startsWith('=')) updateDependencies(key, value.raw)
         }
@@ -698,12 +718,13 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function performInsertRow(atIndex) {
         const snapshot = takeSnapshot()
         cells.clear()
+        cellStyles.clear()
         graph.clear()
         computedCache.clear()
         dirtyCells.clear()
         _generation++
 
-        for (const [key, value] of snapshot.entries()) {
+        for (const [key, value] of snapshot.cells.entries()) {
             const coords = cellCoords(key)
             if (!coords) continue
             if (coords.row >= atIndex) {
@@ -711,6 +732,16 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 cells.set(newKey, { ...value, raw: shiftCellReferences(value.raw, 1, 0, atIndex) })
             } else {
                 cells.set(key, { ...value, raw: shiftCellReferences(value.raw, 1, 0, atIndex) })
+            }
+        }
+        for (const [key, value] of snapshot.styles.entries()) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (coords.row >= atIndex) {
+                const newKey = cellKey(coords.row + 1, coords.col)
+                cellStyles.set(newKey, { ...value })
+            } else {
+                cellStyles.set(key, { ...value })
             }
         }
         rows++
@@ -723,12 +754,13 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function performDeleteRow(atIndex) {
         const snapshot = takeSnapshot()
         cells.clear()
+        cellStyles.clear()
         graph.clear()
         computedCache.clear()
         dirtyCells.clear()
         _generation++
 
-        for (const [key, value] of snapshot.entries()) {
+        for (const [key, value] of snapshot.cells.entries()) {
             const coords = cellCoords(key)
             if (!coords) continue
             if (coords.row === atIndex) continue
@@ -737,6 +769,17 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 cells.set(newKey, { ...value, raw: shiftCellReferences(value.raw, -1, 0, atIndex) })
             } else {
                 cells.set(key, { ...value, raw: shiftCellReferences(value.raw, -1, 0, atIndex) })
+            }
+        }
+        for (const [key, value] of snapshot.styles.entries()) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (coords.row === atIndex) continue
+            if (coords.row > atIndex) {
+                const newKey = cellKey(coords.row - 1, coords.col)
+                cellStyles.set(newKey, { ...value })
+            } else {
+                cellStyles.set(key, { ...value })
             }
         }
         rows--
@@ -749,12 +792,13 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function performInsertColumn(atIndex) {
         const snapshot = takeSnapshot()
         cells.clear()
+        cellStyles.clear()
         graph.clear()
         computedCache.clear()
         dirtyCells.clear()
         _generation++
 
-        for (const [key, value] of snapshot.entries()) {
+        for (const [key, value] of snapshot.cells.entries()) {
             const coords = cellCoords(key)
             if (!coords) continue
             if (coords.col >= atIndex) {
@@ -762,6 +806,16 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 cells.set(newKey, { ...value, raw: shiftCellReferences(value.raw, 0, 1, atIndex, true) })
             } else {
                 cells.set(key, { ...value, raw: shiftCellReferences(value.raw, 0, 1, atIndex, true) })
+            }
+        }
+        for (const [key, value] of snapshot.styles.entries()) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (coords.col >= atIndex) {
+                const newKey = cellKey(coords.row, coords.col + 1)
+                cellStyles.set(newKey, { ...value })
+            } else {
+                cellStyles.set(key, { ...value })
             }
         }
         cols++
@@ -774,12 +828,13 @@ export function createEngine(initialRows = 50, initialCols = 50) {
     function performDeleteColumn(atIndex) {
         const snapshot = takeSnapshot()
         cells.clear()
+        cellStyles.clear()
         graph.clear()
         computedCache.clear()
         dirtyCells.clear()
         _generation++
 
-        for (const [key, value] of snapshot.entries()) {
+        for (const [key, value] of snapshot.cells.entries()) {
             const coords = cellCoords(key)
             if (!coords) continue
             if (coords.col === atIndex) continue
@@ -788,6 +843,17 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 cells.set(newKey, { ...value, raw: shiftCellReferences(value.raw, 0, -1, atIndex, true) })
             } else {
                 cells.set(key, { ...value, raw: shiftCellReferences(value.raw, 0, -1, atIndex, true) })
+            }
+        }
+        for (const [key, value] of snapshot.styles.entries()) {
+            const coords = cellCoords(key)
+            if (!coords) continue
+            if (coords.col === atIndex) continue
+            if (coords.col > atIndex) {
+                const newKey = cellKey(coords.row, coords.col - 1)
+                cellStyles.set(newKey, { ...value })
+            } else {
+                cellStyles.set(key, { ...value })
             }
         }
         cols--
@@ -927,6 +993,28 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             redoStack.push({ ...entry, newWidth: currentWidth })
             colWidths.setSize(entry.col, entry.oldWidth)
             _generation++
+        } else if (entry.type === 'format_batch') {
+            // Restore previous styles
+            for (const { key, oldStyle } of entry.styles) {
+                if (oldStyle && Object.keys(oldStyle).length > 0) {
+                    cellStyles.set(key, { ...oldStyle })
+                } else {
+                    cellStyles.delete(key)
+                }
+            }
+            // Restore previous frozen rows
+            if (entry.freezeRows) {
+                frozenRows = entry.freezeRows.oldVal
+            }
+            // Restore previous column widths
+            if (entry.columnWidths) {
+                for (const { col, oldWidth } of entry.columnWidths) {
+                    colWidths.setSize(col, oldWidth)
+                }
+            }
+            redoStack.push({ ...entry })
+            _generation++
+            notifyStyleChange()
         } else {
             redoStack.push({
                 ...entry,
@@ -945,6 +1033,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 if (entry.oldColWidths) colWidths.restore(entry.oldColWidths)
             }
             recalculate()
+            notifyStyleChange()
         }
         return true
     }
@@ -979,6 +1068,28 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             undoStack.push({ ...entry, oldWidth: currentWidth })
             colWidths.setSize(entry.col, entry.newWidth)
             _generation++
+        } else if (entry.type === 'format_batch') {
+            // Re-apply new styles
+            for (const { key, newStyle } of entry.styles) {
+                if (newStyle && Object.keys(newStyle).length > 0) {
+                    cellStyles.set(key, { ...newStyle })
+                } else {
+                    cellStyles.delete(key)
+                }
+            }
+            // Re-apply new frozen rows
+            if (entry.freezeRows) {
+                frozenRows = entry.freezeRows.newVal
+            }
+            // Re-apply new column widths
+            if (entry.columnWidths) {
+                for (const { col, newWidth } of entry.columnWidths) {
+                    colWidths.setSize(col, newWidth)
+                }
+            }
+            undoStack.push({ ...entry })
+            _generation++
+            notifyStyleChange()
         } else {
             undoStack.push({
                 ...entry,
@@ -994,6 +1105,7 @@ export function createEngine(initialRows = 50, initialCols = 50) {
             if (entry.restoreRowHeights) rowHeights.restore(entry.restoreRowHeights)
             if (entry.restoreColWidths) colWidths.restore(entry.restoreColWidths)
             recalculate()
+            notifyStyleChange()
         }
         return true
     }
@@ -1056,6 +1168,97 @@ export function createEngine(initialRows = 50, initialCols = 50) {
         recalculate()
     }
 
+    function notifyStyleChange() {
+        for (const cb of _styleChangeListeners) {
+            try { cb() } catch {}
+        }
+    }
+
+    function getCellStyle(row, col) {
+        const key = `${row},${col}`
+        const st = cellStyles.get(key)
+        return st ? { ...st } : {
+            bold: false,
+            italic: false,
+            underline: false,
+            bg: 'white',
+            color: '#202124',
+            align: 'left',
+            fontSize: 13,
+            numberFormat: 'general'
+        }
+    }
+
+    function setCellStyle(row, col, patch) {
+        const key = `${row},${col}`
+        const cur = getCellStyle(row, col)
+        const updated = { ...cur, ...patch }
+        const oldStyle = cellStyles.get(key) ? { ...cellStyles.get(key) } : null
+
+        pushToUndoStack({
+            type: 'format_batch',
+            styles: [{ key, oldStyle, newStyle: updated }],
+            freezeRows: null,
+            columnWidths: null
+        })
+
+        cellStyles.set(key, updated)
+        _generation++
+        notifyStyleChange()
+    }
+
+    function applyFormatBatch(batch) {
+        const undoRecord = []
+        if (batch.styles) {
+            for (const [key, { oldStyle, newStyle }] of batch.styles.entries()) {
+                undoRecord.push({ key, oldStyle, newStyle })
+                cellStyles.set(key, { ...newStyle })
+            }
+        }
+
+        if (batch.freezeRows) {
+            frozenRows = batch.freezeRows.newVal
+        }
+
+        if (batch.columnWidths) {
+            for (const { col, newWidth } of batch.columnWidths) {
+                colWidths.setSize(col, newWidth)
+            }
+        }
+
+        pushToUndoStack({
+            type: 'format_batch',
+            styles: undoRecord,
+            freezeRows: batch.freezeRows,
+            columnWidths: batch.columnWidths
+        })
+
+        _generation++
+        notifyStyleChange()
+    }
+
+    function getAllCellStyles() {
+        const res = {}
+        for (const [key, style] of cellStyles.entries()) {
+            res[key] = { ...style }
+        }
+        return res
+    }
+
+    function setFrozenRows(num) {
+        if (num === frozenRows) return
+        const oldVal = frozenRows
+        pushToUndoStack({
+            type: 'format_batch',
+            styles: [],
+            freezeRows: { oldVal, newVal: num },
+            columnWidths: null
+        })
+        frozenRows = num
+        _generation++
+        notifyStyleChange()
+    }
+
     // ── Public cell display (returns raw + computed + error) ──
 
     function getCellForDisplay(row, col) {
@@ -1095,6 +1298,17 @@ export function createEngine(initialRows = 50, initialCols = 50) {
                 cols = minCols
                 colWidths.ensureCount(minCols)
             }
+        },
+        // Styling and formatting API
+        getCellStyle,
+        setCellStyle,
+        getAllCellStyles,
+        applyFormatBatch,
+        getFrozenRows: () => frozenRows,
+        setFrozenRows,
+        subscribeStyles: (listener) => {
+            _styleChangeListeners.add(listener)
+            return () => _styleChangeListeners.delete(listener)
         },
         // Dimension methods for virtualization & resizing
         rowHeights,
